@@ -11,13 +11,16 @@ optional finder enabled, the ones you have not are marked too: faded on the map,
 and solid on the radar as you get near them, so the remaining collectibles can
 be tracked down without a wiki open on a second monitor.
 
+A second, off-by-default option reveals the map's **armour, weapon and bribe
+pickups** the same way.
+
 Built with [plugin-sdk](https://github.com/DK22Pac/plugin-sdk). Targets
 **GTA SA 1.0 US (HOODLUM)** — every patch is byte-guarded and the mod disables
 itself on any other build.
 
 ## Credits
 
-- **matt1010** — collectible icons.
+- **matt1010** — collectible and pickup icons.
 - [aap](https://github.com/aap/debugmenu) — `debugmenu_public.h`, included
   verbatim under its MIT licence (see `source/debugmenu_LICENSE.txt`).
 
@@ -29,6 +32,7 @@ Copy into your game's `scripts` folder, keeping the layout:
 scripts/SA.MapCollectibles.asi
 scripts/SA.MapCollectibles.ini
 scripts/MapCollectibles/collectibles.txd
+scripts/MapCollectibles/pickups.txd
 ```
 
 Requires an ASI loader (Silent's / Ultimate ASI Loader). A
@@ -46,13 +50,16 @@ couple of seconds without a restart.
 | `FinderRadarRange` | `250` | How close a collectible must be to appear on the radar, in game units. |
 | `MapFadeAlpha` | `120` | How faded the not-yet-collected markers are on the pause map. |
 | `IconSize` | `10` | Icon size, in thousandths of the screen width. |
+| `Pickups` | `0` | Add a second row that reveals armour, weapon and bribe pickups on the map and radar. Read at startup, so a restart adds or removes the row. |
+| `DebugLog` | `0` | Diagnostics: log every pickup considered, and why it was or was not shown. |
 
 If [debugmenu](https://github.com/aap/debugmenu) is installed, the same settings
 appear live under a **Map Collectibles** page, along with **Save settings to
 INI**. Debug menu changes are not overwritten by the file watcher.
 
 Custom icons: replace `MapCollectibles/collectibles.txd`, keeping the texture
-names `graffiti`, `snapshot`, `horseshoe`, `oyster` and `usj`.
+names `graffiti`, `snapshot`, `horseshoe`, `oyster` and `usj`, and
+`MapCollectibles/pickups.txd`, keeping `armor`, `weapon` and `bribe`.
 
 ## How it works
 
@@ -93,6 +100,22 @@ sites inside `DisplayStandardMenu` and answers for its own keys. No GXT edits.
 
 Collected pickups are removed from `CPickups::aPickUps`, so "collected" for those
 three sets means a known coordinate with no live pickup left on it.
+
+### Armour, weapons and bribes
+
+These need no coordinate table at all. Unlike the collectibles, street pickups
+are `PICKUP_ON_STREET` / `PICKUP_ON_STREET_SLOW`, which respawn rather than
+being deleted, so every one of them is permanently present in
+`CPickups::aPickUps` and a scan of the array finds them all.
+
+Three things have to be filtered out, all of which look like bugs otherwise.
+The array is shared with ped-dropped weapons, mission pickups and one-shot
+pickups, so only the two respawning types are permanent — a `PICKUP_ONCE_TIMEOUT_SLOW`
+body armour really does appear and then vanish. SA's interiors sit about 1000
+units above the map at x/y that overlap it, so an Ammu-Nation's stock will draw
+over the street unless pickups on the other side of that boundary are skipped.
+And `CPickups::WeaponForModel` reports `MODEL_HEALTH` as a weapon, so the
+special pickup models have to be excluded before asking it anything.
 
 ### Drawing on the map
 

@@ -9,8 +9,10 @@
 #include "CPickups.h"
 #include "CEntity.h"
 #include "CStuntJumpManager.h"
+#include "CGame.h"
 #include "CollectibleCoords.h"
 #include <string.h>
+#include <stdio.h>
 #include <math.h>
 #include <vector>
 #include <windows.h>
@@ -27,7 +29,12 @@ enum eCollectibleMode {
     MODE_OFF, MODE_TAGS, MODE_SNAPSHOTS, MODE_HORSESHOES, MODE_OYSTERS, MODE_JUMPS, MODE_ALL, MODE_COUNT
 };
 
+enum eRevealMode {
+    REVEAL_OFF, REVEAL_ARMOUR, REVEAL_WEAPONS, REVEAL_BRIBES, REVEAL_ALL, REVEAL_COUNT
+};
+
 static const int COLLECT_ROW = 5;
+static const int REVEAL_ROW  = 6;
 
 static const char KEY_LABEL[]  = "FED_BL6";
 static const char TEXT_LABEL[] = "Collectibles";
@@ -47,6 +54,19 @@ static const char *TEX_MODE[MODE_COUNT] = {
     NULL, "graffiti", "snapshot", "horseshoe", "oyster", "usj", NULL
 };
 
+static const char KEY_REVEAL_LABEL[]  = "FED_BL7";
+static const char TEXT_REVEAL_LABEL[] = "Pickups";
+
+static const char *KEY_REVEAL[REVEAL_COUNT] = {
+    "PKUP_OFF", "PKUP_ARM", "PKUP_WPN", "PKUP_BRB", "PKUP_ALL"
+};
+static const char *TEXT_REVEAL[REVEAL_COUNT] = {
+    "OFF", "Armour", "Weapons", "Bribes", "All"
+};
+static const char *TEX_REVEAL[REVEAL_COUNT] = {
+    NULL, "armor", "weapon", "bribe", NULL
+};
+
 static const uintptr_t CALL_INSERT_COLUMN_LABELS = 0x57893F;
 static const uintptr_t CALL_INSERT_COLUMN_STATES = 0x578A2E;
 static const uintptr_t CALL_INSERT_COLUMN_UPDATE = 0x578B4A;
@@ -58,6 +78,7 @@ static const uintptr_t CALL_DRAW_RADAR_MAP       = 0x58A38A;
 static const uintptr_t BYTE_LAST_ROW_INDEX       = 0x578B5E;
 
 static const float WORLD_HALF_SIZE = 3000.0f;
+static const float INTERIOR_Z = 900.0f;
 static const float MAP_TILES_PER_AXIS = 12.0f;
 
 static const uintptr_t CALL_TEXT_GET[] = { 0x5810BD, 0x581122, 0x581191, 0x58143E };
@@ -77,10 +98,13 @@ static bool &gMenuMapMode = *(bool *)0xBA67A1;
 static CVector2D &gRadarOrigin = *(CVector2D *)0xBAA248;
 
 static int  gMode = MODE_OFF;
+static int  gRevealMode = REVEAL_OFF;
+static bool gRevealRow = false;
 static bool gFinderEnabled = false;
 static int  gFinderRange = 250;
 static int  gFinderMapAlpha = 120;
 static int  gIconScale = 10;
+static bool gDebugLog = false;
 static char gIniPath[MAX_PATH] = "";
 static unsigned int gLastSettingsPoll = 0;
 static FILETIME gIniStamp = { 0, 0 };
@@ -98,11 +122,15 @@ static CSprite2d gSprites[MODE_COUNT];
 
 struct CollectibleIcon {
     CVector2D posn;
+    float     z;
     int       type;
 };
 
+static CSprite2d gRevealSprites[REVEAL_COUNT];
+
 static std::vector<CollectibleIcon> gCollected;
 static std::vector<CollectibleIcon> gRemaining;
+static std::vector<CollectibleIcon> gPickups;
 
 static void TakeIniStamp() {
     WIN32_FILE_ATTRIBUTE_DATA data;
@@ -115,6 +143,7 @@ static void LoadSettings() {
     gFinderRange = GetPrivateProfileIntA("Settings", "FinderRadarRange", 250, gIniPath);
     gFinderMapAlpha = GetPrivateProfileIntA("Settings", "MapFadeAlpha", 120, gIniPath);
     gIconScale = GetPrivateProfileIntA("Settings", "IconSize", 10, gIniPath);
+    gDebugLog = GetPrivateProfileIntA("Settings", "DebugLog", 0, gIniPath) != 0;
     TakeIniStamp();
 }
 
@@ -158,10 +187,12 @@ static void InitDebugMenu() {
     registered = true;
 
     DebugMenuAddVar(MENU, "Show", &gMode, OnModeChanged, 1, MODE_OFF, MODE_COUNT - 1, TEXT_MODE);
+    DebugMenuAddVar(MENU, "Reveal pickups", &gRevealMode, OnModeChanged, 1, REVEAL_OFF, REVEAL_COUNT - 1, TEXT_REVEAL);
     DebugMenuAddVarBool8(MENU, "Finder (uncollected)", (int8_t *)&gFinderEnabled, NULL);
     DebugMenuAddVar(MENU, "Finder radar range", &gFinderRange, NULL, 25, 0, 3000, NULL);
     DebugMenuAddVar(MENU, "Finder map fade", &gFinderMapAlpha, NULL, 10, 0, 255, NULL);
     DebugMenuAddVar(MENU, "Icon size (1/1000 screen)", &gIconScale, NULL, 1, 1, 60, NULL);
+    DebugMenuAddVarBool8(MENU, "Debug log", (int8_t *)&gDebugLog, NULL);
     DebugMenuAddCmd(MENU, "Reload INI", CmdReloadIni);
     DebugMenuAddCmd(MENU, "Save settings to INI", CmdSaveIni);
 }
@@ -183,6 +214,19 @@ static void LoadTextures() {
     for (int i = MODE_TAGS; i < MODE_ALL; i++)
         gSprites[i].SetTexture((char *)TEX_MODE[i]);
     CTxdStore::PopCurrentTxd();
+
+    int revealSlot = CTxdStore::FindTxdSlot("mcpickups");
+    if (revealSlot < 0)
+        revealSlot = CTxdStore::AddTxdSlot("mcpickups");
+    if (revealSlot < 0 || !CTxdStore::LoadTxd(revealSlot, PLUGIN_PATH((char *)"MapCollectibles\\pickups.txd")))
+        return;
+
+    CTxdStore::AddRef(revealSlot);
+    CTxdStore::PushCurrentTxd();
+    CTxdStore::SetCurrentTxd(revealSlot);
+    for (int i = REVEAL_ARMOUR; i < REVEAL_ALL; i++)
+        gRevealSprites[i].SetTexture((char *)TEX_REVEAL[i]);
+    CTxdStore::PopCurrentTxd();
 }
 
 static bool PickupStillPresent(const float *coors) {
@@ -200,16 +244,17 @@ static bool PickupStillPresent(const float *coors) {
     return false;
 }
 
-static void Sort(bool collected, int type, float x, float y) {
+static void Sort(bool collected, int type, float x, float y, float z) {
     CollectibleIcon icon;
     icon.posn = CVector2D(x, y);
+    icon.z = z;
     icon.type = type;
     (collected ? gCollected : gRemaining).push_back(icon);
 }
 
 static void CollectFromTable(int type, const float table[][3], int count) {
     for (int i = 0; i < count; i++)
-        Sort(!PickupStillPresent(table[i]), type, table[i][0], table[i][1]);
+        Sort(!PickupStillPresent(table[i]), type, table[i][0], table[i][1], table[i][2]);
 }
 
 static void GatherType(int type) {
@@ -219,7 +264,7 @@ static void GatherType(int type) {
             CEntity *entity = gTagDesc[i].m_pEntity;
             if (entity) {
                 const CVector &posn = entity->GetPosition();
-                Sort(gTagDesc[i].m_nAlpha > TAG_SPRAYED_ALPHA, type, posn.x, posn.y);
+                Sort(gTagDesc[i].m_nAlpha > TAG_SPRAYED_ALPHA, type, posn.x, posn.y, posn.z);
             }
         }
         break;
@@ -241,13 +286,94 @@ static void GatherType(int type) {
                 continue;
             CStuntJump &jump = pool->m_pObjects[i];
             Sort(jump.done, type, (jump.start.m_vecMin.x + jump.start.m_vecMax.x) * 0.5f,
-                                  (jump.start.m_vecMin.y + jump.start.m_vecMax.y) * 0.5f);
+                                  (jump.start.m_vecMin.y + jump.start.m_vecMax.y) * 0.5f,
+                                  (jump.start.m_vecMin.z + jump.start.m_vecMax.z) * 0.5f);
         }
         break;
     }
     default:
         break;
     }
+}
+
+static bool IsPersistentPickup(unsigned char type) {
+    return type == PICKUP_ON_STREET || type == PICKUP_ON_STREET_SLOW;
+}
+
+static int PickupCategory(short modelId) {
+    if (modelId <= 0 || modelId >= 20000)
+        return REVEAL_OFF;
+
+    if (modelId == MODEL_BODYARMOUR)
+        return REVEAL_ARMOUR;
+    if (modelId == MODEL_BRIBE)
+        return REVEAL_BRIBES;
+    if (modelId >= MODEL_INFO && modelId <= MODEL_KILLFRENZY)
+        return REVEAL_OFF;
+    if (CPickups::WeaponForModel(modelId) > 0)
+        return REVEAL_WEAPONS;
+    return REVEAL_OFF;
+}
+
+static void GatherPickups() {
+    gPickups.clear();
+    if (gRevealMode == REVEAL_OFF)
+        return;
+
+    bool playerInside = CGame::currArea != 0;
+    FILE *log = NULL;
+
+    if (gDebugLog) {
+        log = fopen(PLUGIN_PATH((char *)"SA.MapCollectibles.log"), "a");
+        if (log) {
+            CVector player = FindPlayerCoors(0);
+            fprintf(log, "\n[%u] area=%d player=%.1f,%.1f,%.1f mode=%d\n",
+                    GetTickCount(), CGame::currArea, player.x, player.y, player.z, gRevealMode);
+        }
+    }
+
+    for (unsigned int i = 0; i < MAX_NUM_PICKUPS; i++) {
+        CPickup &pickup = CPickups::aPickUps[i];
+        if (pickup.m_nPickupType == PICKUP_NONE)
+            continue;
+
+        int category = PickupCategory(pickup.m_nModelIndex);
+        if (category == REVEAL_OFF)
+            continue;
+
+        float x = pickup.m_vecPos.x * 0.125f;
+        float y = pickup.m_vecPos.y * 0.125f;
+        float z = pickup.m_vecPos.z * 0.125f;
+
+        const char *reject = NULL;
+        if (!IsPersistentPickup(pickup.m_nPickupType))
+            reject = "transient";
+        else if (pickup.m_nFlags.bDisabled)
+            reject = "disabled";
+        else if ((z >= INTERIOR_Z) != playerInside)
+            reject = "other-layer";
+        else if (gRevealMode != REVEAL_ALL && gRevealMode != category)
+            reject = "other-category";
+
+        if (log) {
+            fprintf(log, "  slot=%3u model=%5d type=%2u flags=%02X cat=%d pos=%.1f,%.1f,%.1f %s\n",
+                    i, pickup.m_nModelIndex, pickup.m_nPickupType,
+                    *(unsigned char *)&pickup.m_nFlags, category, x, y, z,
+                    reject ? reject : "SHOWN");
+        }
+
+        if (reject)
+            continue;
+
+        CollectibleIcon icon;
+        icon.posn = CVector2D(x, y);
+        icon.z = z;
+        icon.type = category;
+        gPickups.push_back(icon);
+    }
+
+    if (log)
+        fclose(log);
 }
 
 static void RebuildIcons() {
@@ -263,6 +389,8 @@ static void RebuildIcons() {
     else if (gMode != MODE_OFF) {
         GatherType(gMode);
     }
+
+    GatherPickups();
 }
 
 static void RebuildIconsIfStale() {
@@ -274,10 +402,24 @@ static float IconHalfSize() {
     return gScreenWidth * (gIconScale * 0.001f);
 }
 
+static void DrawMapIcon(CSprite2d &sprite, const CVector2D &posn, unsigned char alpha,
+                        float scaleX, float scaleY, float half) {
+    if (!sprite.m_pTexture)
+        return;
+
+    float x = gMapLeft + (posn.x + WORLD_HALF_SIZE) * scaleX;
+    float y = gMapTop + (WORLD_HALF_SIZE - posn.y) * scaleY;
+
+    if (x < gMapLeft || x > gMapLeft + gMapWidth || y < gMapTop || y > gMapTop + gMapHeight)
+        return;
+
+    sprite.Draw(CRect(x - half, y - half, x + half, y + half), CRGBA(255, 255, 255, alpha));
+}
+
 static void DrawCollectibles() {
     PollSettings();
 
-    if (gMode == MODE_OFF || !gMapRectValid)
+    if (!gMapRectValid || (gMode == MODE_OFF && gRevealMode == REVEAL_OFF))
         return;
 
     LoadTextures();
@@ -294,33 +436,50 @@ static void DrawCollectibles() {
         const std::vector<CollectibleIcon> &icons = pass == 0 ? gRemaining : gCollected;
         unsigned char alpha = pass == 0 ? (unsigned char)gFinderMapAlpha : 255;
 
-        for (std::vector<CollectibleIcon>::const_iterator it = icons.begin(); it != icons.end(); ++it) {
-            if (!gSprites[it->type].m_pTexture)
-                continue;
-
-            float x = gMapLeft + (it->posn.x + WORLD_HALF_SIZE) * scaleX;
-            float y = gMapTop + (WORLD_HALF_SIZE - it->posn.y) * scaleY;
-
-            if (x < gMapLeft || x > gMapLeft + gMapWidth || y < gMapTop || y > gMapTop + gMapHeight)
-                continue;
-
-            gSprites[it->type].Draw(CRect(x - half, y - half, x + half, y + half), CRGBA(255, 255, 255, alpha));
-        }
+        for (std::vector<CollectibleIcon>::const_iterator it = icons.begin(); it != icons.end(); ++it)
+            DrawMapIcon(gSprites[it->type], it->posn, alpha, scaleX, scaleY, half);
     }
+
+    for (std::vector<CollectibleIcon>::const_iterator it = gPickups.begin(); it != gPickups.end(); ++it)
+        DrawMapIcon(gRevealSprites[it->type], it->posn, 255, scaleX, scaleY, half);
+}
+
+static void DrawRadarIcon(const CollectibleIcon &icon, CSprite2d &sprite, float playerZ, float half, float limit) {
+    if (!sprite.m_pTexture)
+        return;
+
+    float dx = icon.posn.x - gRadarOrigin.x;
+    float dy = icon.posn.y - gRadarOrigin.y;
+    float dz = icon.z - playerZ;
+    if (dx * dx + dy * dy + dz * dz > (float)gFinderRange * (float)gFinderRange)
+        return;
+
+    CVector2D radarSpace, screen;
+    CRadar::TransformRealWorldPointToRadarSpace(radarSpace, icon.posn);
+
+    if (radarSpace.x * radarSpace.x + radarSpace.y * radarSpace.y > limit)
+        return;
+
+    CRadar::TransformRadarPointToScreenSpace(screen, radarSpace);
+    sprite.Draw(CRect(screen.x - half, screen.y - half, screen.x + half, screen.y + half),
+                CRGBA(255, 255, 255, 255));
 }
 
 static void DrawRadarCollectibles() {
     PollSettings();
 
-    if (gMode == MODE_OFF || !gFinderEnabled)
+    if (gMenuMapMode || FrontEndMenuManager.m_bMenuActive)
         return;
 
-    if (gMenuMapMode || FrontEndMenuManager.m_bMenuActive)
+    bool showFinder = gMode != MODE_OFF && gFinderEnabled;
+    bool showPickups = gRevealMode != REVEAL_OFF;
+    if (!showFinder && !showPickups)
         return;
 
     LoadTextures();
     RebuildIconsIfStale();
     float half = IconHalfSize();
+    float playerZ = FindPlayerCoors(0).z;
 
     CVector2D centre, edgeX, edgeY;
     CRadar::TransformRadarPointToScreenSpace(centre, CVector2D(0.0f, 0.0f));
@@ -337,24 +496,14 @@ static void DrawRadarCollectibles() {
         limit = 0.0f;
     limit *= limit;
 
-    for (std::vector<CollectibleIcon>::const_iterator it = gRemaining.begin(); it != gRemaining.end(); ++it) {
-        if (!gSprites[it->type].m_pTexture)
-            continue;
+    if (showFinder) {
+        for (std::vector<CollectibleIcon>::const_iterator it = gRemaining.begin(); it != gRemaining.end(); ++it)
+            DrawRadarIcon(*it, gSprites[it->type], playerZ, half, limit);
+    }
 
-        float dx = it->posn.x - gRadarOrigin.x;
-        float dy = it->posn.y - gRadarOrigin.y;
-        if (dx * dx + dy * dy > (float)gFinderRange * (float)gFinderRange)
-            continue;
-
-        CVector2D radarSpace, screen;
-        CRadar::TransformRealWorldPointToRadarSpace(radarSpace, it->posn);
-
-        if (radarSpace.x * radarSpace.x + radarSpace.y * radarSpace.y > limit)
-            continue;
-
-        CRadar::TransformRadarPointToScreenSpace(screen, radarSpace);
-        gSprites[it->type].Draw(CRect(screen.x - half, screen.y - half, screen.x + half, screen.y + half),
-                                CRGBA(255, 255, 255, 255));
+    if (showPickups) {
+        for (std::vector<CollectibleIcon>::const_iterator it = gPickups.begin(); it != gPickups.end(); ++it)
+            DrawRadarIcon(*it, gRevealSprites[it->type], playerZ, half, limit);
     }
 }
 
@@ -414,12 +563,16 @@ static tMenuPanel ** __cdecl InsertMenu_Hook(unsigned char panelId, unsigned cha
                                              char *s7, char *s8, char *s9, char *s10, char *s11, char *s12) {
     if (columnId == 0) {
         s6 = (char *)KEY_LABEL;
+        if (gRevealRow)
+            s7 = (char *)KEY_REVEAL_LABEL;
         gIconsValid = false;
         if (MenuNumber[panelId])
             MenuNumber[panelId]->m_afColumnWidth[1] = MenuNumber[panelId]->m_afColumnWidth[0] * 1.6f;
     }
     else if (columnId == 1) {
         s6 = (char *)KEY_MODE[gMode];
+        if (gRevealRow)
+            s7 = (char *)KEY_REVEAL[gRevealMode];
     }
 
     return CMenuSystem::InsertMenu(panelId, columnId, title, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12);
@@ -427,12 +580,18 @@ static tMenuPanel ** __cdecl InsertMenu_Hook(unsigned char panelId, unsigned cha
 
 static char __cdecl CheckForAccept_Hook(unsigned char panelId) {
     char row = CMenuSystem::CheckForAccept(panelId);
-    if (row != COLLECT_ROW)
+    if (row != COLLECT_ROW && !(gRevealRow && row == REVEAL_ROW))
         return row;
 
-    gMode = (gMode + 1) % MODE_COUNT;
+    if (row == COLLECT_ROW) {
+        gMode = (gMode + 1) % MODE_COUNT;
+        CMenuSystem::InsertOneMenuItem(panelId, 1, COLLECT_ROW, (char *)KEY_MODE[gMode]);
+    }
+    else {
+        gRevealMode = (gRevealMode + 1) % REVEAL_COUNT;
+        CMenuSystem::InsertOneMenuItem(panelId, 1, REVEAL_ROW, (char *)KEY_REVEAL[gRevealMode]);
+    }
     gIconsValid = false;
-    CMenuSystem::InsertOneMenuItem(panelId, 1, COLLECT_ROW, (char *)KEY_MODE[gMode]);
 
     if (MenuNumber[panelId])
         MenuNumber[panelId]->m_nAcceptedRow = -99;
@@ -446,6 +605,12 @@ static const char * __fastcall TextGet_Hook(CText *self, void *, const char *key
         for (int i = 0; i < MODE_COUNT; i++) {
             if (!strcmp(key, KEY_MODE[i]))
                 return TEXT_MODE[i];
+        }
+        if (!strcmp(key, KEY_REVEAL_LABEL))
+            return TEXT_REVEAL_LABEL;
+        for (int i = 0; i < REVEAL_COUNT; i++) {
+            if (!strcmp(key, KEY_REVEAL[i]))
+                return TEXT_REVEAL[i];
         }
     }
     return self->Get(key);
@@ -469,6 +634,7 @@ public:
         lstrcpynA(gIniPath, PLUGIN_PATH((char *)"SA.MapCollectibles.ini"), MAX_PATH);
         gLastSettingsPoll = GetTickCount();
         LoadSettings();
+        gRevealRow = GetPrivateProfileIntA("Settings", "Pickups", 0, gIniPath) != 0;
 
         Events::initGameEvent += [] { InitDebugMenu(); };
 
@@ -480,7 +646,7 @@ public:
         patch::RedirectCall(CALL_DRAW_MAP_SPRITE, MapSprite_Hook);
         patch::RedirectCall(CALL_DRAW_MAP_BLIPS, DrawBlips_Hook);
         patch::RedirectCall(CALL_DRAW_RADAR_MAP, DrawRadarMap_Hook);
-        patch::SetUChar(BYTE_LAST_ROW_INDEX, COLLECT_ROW);
+        patch::SetUChar(BYTE_LAST_ROW_INDEX, gRevealRow ? REVEAL_ROW : COLLECT_ROW);
 
         for (uintptr_t address : CALL_TEXT_GET) {
             if (*(unsigned char *)address == 0xE8)
