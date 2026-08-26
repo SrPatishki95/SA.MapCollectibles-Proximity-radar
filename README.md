@@ -49,7 +49,8 @@ couple of seconds without a restart.
 | `Finder` | `1` | Also mark the collectibles you have **not** picked up yet. |
 | `FinderRadarRange` | `250` | How close a collectible must be to appear on the radar, in game units. |
 | `MapFadeAlpha` | `120` | How faded the not-yet-collected markers are on the pause map. |
-| `IconSize` | `10` | Icon size, in thousandths of the screen width. |
+| `IconSize` | `8` | Collectible icon size, in thousandths of the screen width. |
+| `PickupIconSize` | `8` | Pickup icon size, same units. |
 | `Pickups` | `0` | Add a second row that reveals armour, weapon and bribe pickups on the map and radar. Read at startup, so a restart adds or removes the row. |
 | `DebugLog` | `0` | Diagnostics: log every pickup considered, and why it was or was not shown. |
 

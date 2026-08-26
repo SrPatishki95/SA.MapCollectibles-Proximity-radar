@@ -103,7 +103,8 @@ static bool gRevealRow = false;
 static bool gFinderEnabled = false;
 static int  gFinderRange = 250;
 static int  gFinderMapAlpha = 120;
-static int  gIconScale = 10;
+static int  gIconScale = 8;
+static int  gPickupIconScale = 8;
 static bool gDebugLog = false;
 static char gIniPath[MAX_PATH] = "";
 static unsigned int gLastSettingsPoll = 0;
@@ -142,7 +143,8 @@ static void LoadSettings() {
     gFinderEnabled = GetPrivateProfileIntA("Settings", "Finder", 1, gIniPath) != 0;
     gFinderRange = GetPrivateProfileIntA("Settings", "FinderRadarRange", 250, gIniPath);
     gFinderMapAlpha = GetPrivateProfileIntA("Settings", "MapFadeAlpha", 120, gIniPath);
-    gIconScale = GetPrivateProfileIntA("Settings", "IconSize", 10, gIniPath);
+    gIconScale = GetPrivateProfileIntA("Settings", "IconSize", 8, gIniPath);
+    gPickupIconScale = GetPrivateProfileIntA("Settings", "PickupIconSize", 8, gIniPath);
     gDebugLog = GetPrivateProfileIntA("Settings", "DebugLog", 0, gIniPath) != 0;
     TakeIniStamp();
 }
@@ -158,6 +160,7 @@ static void SaveSettings() {
     WriteIniInt("FinderRadarRange", gFinderRange);
     WriteIniInt("MapFadeAlpha", gFinderMapAlpha);
     WriteIniInt("IconSize", gIconScale);
+    WriteIniInt("PickupIconSize", gPickupIconScale);
     TakeIniStamp();
 }
 
@@ -191,7 +194,8 @@ static void InitDebugMenu() {
     DebugMenuAddVarBool8(MENU, "Finder (uncollected)", (int8_t *)&gFinderEnabled, NULL);
     DebugMenuAddVar(MENU, "Finder radar range", &gFinderRange, NULL, 25, 0, 3000, NULL);
     DebugMenuAddVar(MENU, "Finder map fade", &gFinderMapAlpha, NULL, 10, 0, 255, NULL);
-    DebugMenuAddVar(MENU, "Icon size (1/1000 screen)", &gIconScale, NULL, 1, 1, 60, NULL);
+    DebugMenuAddVar(MENU, "Collectible size", &gIconScale, NULL, 1, 1, 60, NULL);
+    DebugMenuAddVar(MENU, "Pickup size", &gPickupIconScale, NULL, 1, 1, 60, NULL);
     DebugMenuAddVarBool8(MENU, "Debug log", (int8_t *)&gDebugLog, NULL);
     DebugMenuAddCmd(MENU, "Reload INI", CmdReloadIni);
     DebugMenuAddCmd(MENU, "Save settings to INI", CmdSaveIni);
@@ -398,8 +402,25 @@ static void RebuildIconsIfStale() {
         RebuildIcons();
 }
 
-static float IconHalfSize() {
-    return gScreenWidth * (gIconScale * 0.001f);
+static float IconHalfSize(int scale) {
+    return gScreenWidth * (scale * 0.001f);
+}
+
+static float RadarEdgeLimit(float half) {
+    CVector2D centre, edgeX, edgeY;
+    CRadar::TransformRadarPointToScreenSpace(centre, CVector2D(0.0f, 0.0f));
+    CRadar::TransformRadarPointToScreenSpace(edgeX, CVector2D(1.0f, 0.0f));
+    CRadar::TransformRadarPointToScreenSpace(edgeY, CVector2D(0.0f, 1.0f));
+
+    float radiusX = fabsf(edgeX.x - centre.x);
+    float radiusY = fabsf(edgeY.y - centre.y);
+    float marginX = radiusX > 0.0f ? half / radiusX : 0.0f;
+    float marginY = radiusY > 0.0f ? half / radiusY : 0.0f;
+
+    float limit = 1.0f - (marginX > marginY ? marginX : marginY);
+    if (limit < 0.0f)
+        limit = 0.0f;
+    return limit * limit;
 }
 
 static void DrawMapIcon(CSprite2d &sprite, const CVector2D &posn, unsigned char alpha,
@@ -425,7 +446,8 @@ static void DrawCollectibles() {
     LoadTextures();
     RebuildIconsIfStale();
 
-    float half = IconHalfSize();
+    float half = IconHalfSize(gIconScale);
+    float pickupHalf = IconHalfSize(gPickupIconScale);
     float scaleX = gMapWidth / (WORLD_HALF_SIZE * 2.0f);
     float scaleY = gMapHeight / (WORLD_HALF_SIZE * 2.0f);
 
@@ -441,7 +463,7 @@ static void DrawCollectibles() {
     }
 
     for (std::vector<CollectibleIcon>::const_iterator it = gPickups.begin(); it != gPickups.end(); ++it)
-        DrawMapIcon(gRevealSprites[it->type], it->posn, 255, scaleX, scaleY, half);
+        DrawMapIcon(gRevealSprites[it->type], it->posn, 255, scaleX, scaleY, pickupHalf);
 }
 
 static void DrawRadarIcon(const CollectibleIcon &icon, CSprite2d &sprite, float playerZ, float half, float limit) {
@@ -478,23 +500,12 @@ static void DrawRadarCollectibles() {
 
     LoadTextures();
     RebuildIconsIfStale();
-    float half = IconHalfSize();
     float playerZ = FindPlayerCoors(0).z;
 
-    CVector2D centre, edgeX, edgeY;
-    CRadar::TransformRadarPointToScreenSpace(centre, CVector2D(0.0f, 0.0f));
-    CRadar::TransformRadarPointToScreenSpace(edgeX, CVector2D(1.0f, 0.0f));
-    CRadar::TransformRadarPointToScreenSpace(edgeY, CVector2D(0.0f, 1.0f));
-
-    float radiusX = fabsf(edgeX.x - centre.x);
-    float radiusY = fabsf(edgeY.y - centre.y);
-    float marginX = radiusX > 0.0f ? half / radiusX : 0.0f;
-    float marginY = radiusY > 0.0f ? half / radiusY : 0.0f;
-
-    float limit = 1.0f - (marginX > marginY ? marginX : marginY);
-    if (limit < 0.0f)
-        limit = 0.0f;
-    limit *= limit;
+    float half = IconHalfSize(gIconScale);
+    float pickupHalf = IconHalfSize(gPickupIconScale);
+    float limit = RadarEdgeLimit(half);
+    float pickupLimit = RadarEdgeLimit(pickupHalf);
 
     if (showFinder) {
         for (std::vector<CollectibleIcon>::const_iterator it = gRemaining.begin(); it != gRemaining.end(); ++it)
@@ -503,7 +514,7 @@ static void DrawRadarCollectibles() {
 
     if (showPickups) {
         for (std::vector<CollectibleIcon>::const_iterator it = gPickups.begin(); it != gPickups.end(); ++it)
-            DrawRadarIcon(*it, gRevealSprites[it->type], playerZ, half, limit);
+            DrawRadarIcon(*it, gRevealSprites[it->type], playerZ, pickupHalf, pickupLimit);
     }
 }
 
