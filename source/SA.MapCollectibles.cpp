@@ -30,11 +30,15 @@ enum eCollectibleMode {
 };
 
 enum eRevealMode {
-    REVEAL_OFF, REVEAL_ARMOUR, REVEAL_WEAPONS, REVEAL_BRIBES, REVEAL_ALL, REVEAL_COUNT
+    REVEAL_OFF, REVEAL_ARMOR, REVEAL_WEAPONS, REVEAL_BRIBES, REVEAL_ALL, REVEAL_COUNT
 };
 
-static const int COLLECT_ROW = 5;
-static const int REVEAL_ROW  = 6;
+enum eExtraRow {
+    ROW_ASSETS, ROW_COLLECT, ROW_PICKUPS, ROW_KIND_COUNT
+};
+
+static const int FIRST_EXTRA_ROW = 5;
+static const int MAX_MENU_ROWS = 12;
 
 static const char KEY_LABEL[]  = "FED_BL6";
 static const char TEXT_LABEL[] = "Collectibles";
@@ -61,11 +65,18 @@ static const char *KEY_REVEAL[REVEAL_COUNT] = {
     "PKUP_OFF", "PKUP_ARM", "PKUP_WPN", "PKUP_BRB", "PKUP_ALL"
 };
 static const char *TEXT_REVEAL[REVEAL_COUNT] = {
-    "OFF", "Armour", "Weapons", "Bribes", "All"
+    "OFF", "Armor", "Weapons", "Bribes", "All"
 };
 static const char *TEX_REVEAL[REVEAL_COUNT] = {
     NULL, "armor", "weapon", "bribe", NULL
 };
+
+static const char KEY_ASSET_LABEL[]  = "FED_BL8";
+static const char TEXT_ASSET_LABEL[] = "Assets";
+static const char TEX_ASSET[]        = "asset";
+
+static const char KEY_ON[]  = "FEM_ON";
+static const char KEY_OFF[] = "FEM_OFF";
 
 static const uintptr_t CALL_INSERT_COLUMN_LABELS = 0x57893F;
 static const uintptr_t CALL_INSERT_COLUMN_STATES = 0x578A2E;
@@ -100,11 +111,14 @@ static CVector2D &gRadarOrigin = *(CVector2D *)0xBAA248;
 static int  gMode = MODE_OFF;
 static int  gRevealMode = REVEAL_OFF;
 static bool gRevealRow = false;
+static bool gAssetsRow = false;
+static bool gAssetsShown = false;
 static bool gFinderEnabled = false;
 static int  gFinderRange = 250;
 static int  gFinderMapAlpha = 120;
 static int  gIconScale = 8;
 static int  gPickupIconScale = 8;
+static int  gAssetIconScale = 8;
 static bool gDebugLog = false;
 static char gIniPath[MAX_PATH] = "";
 static unsigned int gLastSettingsPoll = 0;
@@ -128,10 +142,16 @@ struct CollectibleIcon {
 };
 
 static CSprite2d gRevealSprites[REVEAL_COUNT];
+static CSprite2d gAssetSprite;
+
+static int gRowKind[MAX_MENU_ROWS];
+static int gKindRow[ROW_KIND_COUNT];
+static int gLastRow = FIRST_EXTRA_ROW;
 
 static std::vector<CollectibleIcon> gCollected;
 static std::vector<CollectibleIcon> gRemaining;
 static std::vector<CollectibleIcon> gPickups;
+static std::vector<CollectibleIcon> gAssets;
 
 static void TakeIniStamp() {
     WIN32_FILE_ATTRIBUTE_DATA data;
@@ -145,22 +165,51 @@ static void LoadSettings() {
     gFinderMapAlpha = GetPrivateProfileIntA("Settings", "MapFadeAlpha", 120, gIniPath);
     gIconScale = GetPrivateProfileIntA("Settings", "IconSize", 8, gIniPath);
     gPickupIconScale = GetPrivateProfileIntA("Settings", "PickupIconSize", 8, gIniPath);
+    gAssetIconScale = GetPrivateProfileIntA("Settings", "AssetIconSize", 8, gIniPath);
     gDebugLog = GetPrivateProfileIntA("Settings", "DebugLog", 0, gIniPath) != 0;
     TakeIniStamp();
 }
 
-static void WriteIniInt(const char *key, int value) {
+static void WriteIniInt(const char *section, const char *key, int value) {
     char buffer[16];
-    wsprintfA(buffer, "%d", value);
-    WritePrivateProfileStringA("Settings", key, buffer, gIniPath);
+    wsprintfA(buffer, " %d", value);
+    WritePrivateProfileStringA(section, key, buffer, gIniPath);
+}
+
+static int ReadState(const char *key, int lowest, int highest) {
+    int value = GetPrivateProfileIntA("SaveState", key, lowest, gIniPath);
+    if (value < lowest)
+        value = lowest;
+    if (value > highest)
+        value = highest;
+    return value;
+}
+
+static void LoadState() {
+    gMode = ReadState("Collectibles", MODE_OFF, MODE_COUNT - 1);
+    gRevealMode = ReadState("Pickups", REVEAL_OFF, REVEAL_COUNT - 1);
+    gAssetsShown = ReadState("Assets", 0, 1) != 0;
+
+    if (!gRevealRow)
+        gRevealMode = REVEAL_OFF;
+    if (!gAssetsRow)
+        gAssetsShown = false;
+}
+
+static void SaveState() {
+    WriteIniInt("SaveState", "Collectibles", gMode);
+    WriteIniInt("SaveState", "Pickups", gRevealMode);
+    WriteIniInt("SaveState", "Assets", gAssetsShown ? 1 : 0);
+    TakeIniStamp();
 }
 
 static void SaveSettings() {
-    WriteIniInt("Finder", gFinderEnabled ? 1 : 0);
-    WriteIniInt("FinderRadarRange", gFinderRange);
-    WriteIniInt("MapFadeAlpha", gFinderMapAlpha);
-    WriteIniInt("IconSize", gIconScale);
-    WriteIniInt("PickupIconSize", gPickupIconScale);
+    WriteIniInt("Settings", "Finder", gFinderEnabled ? 1 : 0);
+    WriteIniInt("Settings", "FinderRadarRange", gFinderRange);
+    WriteIniInt("Settings", "MapFadeAlpha", gFinderMapAlpha);
+    WriteIniInt("Settings", "IconSize", gIconScale);
+    WriteIniInt("Settings", "PickupIconSize", gPickupIconScale);
+    WriteIniInt("Settings", "AssetIconSize", gAssetIconScale);
     TakeIniStamp();
 }
 
@@ -177,11 +226,16 @@ static void PollSettings() {
         return;
 
     LoadSettings();
+    LoadState();
+    gIconsValid = false;
 }
 
 static void CmdReloadIni() { LoadSettings(); }
 static void CmdSaveIni() { SaveSettings(); }
-static void OnModeChanged() { gIconsValid = false; }
+static void OnModeChanged() {
+    gIconsValid = false;
+    SaveState();
+}
 
 static void InitDebugMenu() {
     static bool registered = false;
@@ -191,11 +245,13 @@ static void InitDebugMenu() {
 
     DebugMenuAddVar(MENU, "Show", &gMode, OnModeChanged, 1, MODE_OFF, MODE_COUNT - 1, TEXT_MODE);
     DebugMenuAddVar(MENU, "Reveal pickups", &gRevealMode, OnModeChanged, 1, REVEAL_OFF, REVEAL_COUNT - 1, TEXT_REVEAL);
+    DebugMenuAddVarBool8(MENU, "Show assets", (int8_t *)&gAssetsShown, OnModeChanged);
     DebugMenuAddVarBool8(MENU, "Finder (uncollected)", (int8_t *)&gFinderEnabled, NULL);
     DebugMenuAddVar(MENU, "Finder radar range", &gFinderRange, NULL, 25, 0, 3000, NULL);
     DebugMenuAddVar(MENU, "Finder map fade", &gFinderMapAlpha, NULL, 10, 0, 255, NULL);
     DebugMenuAddVar(MENU, "Collectible size", &gIconScale, NULL, 1, 1, 60, NULL);
     DebugMenuAddVar(MENU, "Pickup size", &gPickupIconScale, NULL, 1, 1, 60, NULL);
+    DebugMenuAddVar(MENU, "Asset size", &gAssetIconScale, NULL, 1, 1, 60, NULL);
     DebugMenuAddVarBool8(MENU, "Debug log", (int8_t *)&gDebugLog, NULL);
     DebugMenuAddCmd(MENU, "Reload INI", CmdReloadIni);
     DebugMenuAddCmd(MENU, "Save settings to INI", CmdSaveIni);
@@ -228,8 +284,9 @@ static void LoadTextures() {
     CTxdStore::AddRef(revealSlot);
     CTxdStore::PushCurrentTxd();
     CTxdStore::SetCurrentTxd(revealSlot);
-    for (int i = REVEAL_ARMOUR; i < REVEAL_ALL; i++)
+    for (int i = REVEAL_ARMOR; i < REVEAL_ALL; i++)
         gRevealSprites[i].SetTexture((char *)TEX_REVEAL[i]);
+    gAssetSprite.SetTexture((char *)TEX_ASSET);
     CTxdStore::PopCurrentTxd();
 }
 
@@ -309,7 +366,7 @@ static int PickupCategory(short modelId) {
         return REVEAL_OFF;
 
     if (modelId == MODEL_BODYARMOUR)
-        return REVEAL_ARMOUR;
+        return REVEAL_ARMOR;
     if (modelId == MODEL_BRIBE)
         return REVEAL_BRIBES;
     if (modelId >= MODEL_INFO && modelId <= MODEL_KILLFRENZY)
@@ -380,6 +437,30 @@ static void GatherPickups() {
         fclose(log);
 }
 
+static void GatherAssets() {
+    gAssets.clear();
+    if (!gAssetsShown)
+        return;
+
+    bool playerInside = CGame::currArea != 0;
+
+    for (unsigned int i = 0; i < MAX_NUM_PICKUPS; i++) {
+        CPickup &pickup = CPickups::aPickUps[i];
+        if (pickup.m_nPickupType != PICKUP_ASSET_REVENUE)
+            continue;
+
+        float z = pickup.m_vecPos.z * 0.125f;
+        if ((z >= INTERIOR_Z) != playerInside)
+            continue;
+
+        CollectibleIcon icon;
+        icon.posn = CVector2D(pickup.m_vecPos.x * 0.125f, pickup.m_vecPos.y * 0.125f);
+        icon.z = z;
+        icon.type = 0;
+        gAssets.push_back(icon);
+    }
+}
+
 static void RebuildIcons() {
     gCollected.clear();
     gRemaining.clear();
@@ -395,6 +476,7 @@ static void RebuildIcons() {
     }
 
     GatherPickups();
+    GatherAssets();
 }
 
 static void RebuildIconsIfStale() {
@@ -440,7 +522,7 @@ static void DrawMapIcon(CSprite2d &sprite, const CVector2D &posn, unsigned char 
 static void DrawCollectibles() {
     PollSettings();
 
-    if (!gMapRectValid || (gMode == MODE_OFF && gRevealMode == REVEAL_OFF))
+    if (!gMapRectValid || (gMode == MODE_OFF && gRevealMode == REVEAL_OFF && !gAssetsShown))
         return;
 
     LoadTextures();
@@ -464,6 +546,10 @@ static void DrawCollectibles() {
 
     for (std::vector<CollectibleIcon>::const_iterator it = gPickups.begin(); it != gPickups.end(); ++it)
         DrawMapIcon(gRevealSprites[it->type], it->posn, 255, scaleX, scaleY, pickupHalf);
+
+    float assetHalf = IconHalfSize(gAssetIconScale);
+    for (std::vector<CollectibleIcon>::const_iterator it = gAssets.begin(); it != gAssets.end(); ++it)
+        DrawMapIcon(gAssetSprite, it->posn, 255, scaleX, scaleY, assetHalf);
 }
 
 static void DrawRadarIcon(const CollectibleIcon &icon, CSprite2d &sprite, float playerZ, float half, float limit) {
@@ -495,7 +581,7 @@ static void DrawRadarCollectibles() {
 
     bool showFinder = gMode != MODE_OFF && gFinderEnabled;
     bool showPickups = gRevealMode != REVEAL_OFF;
-    if (!showFinder && !showPickups)
+    if (!showFinder && !showPickups && !gAssetsShown)
         return;
 
     LoadTextures();
@@ -515,6 +601,13 @@ static void DrawRadarCollectibles() {
     if (showPickups) {
         for (std::vector<CollectibleIcon>::const_iterator it = gPickups.begin(); it != gPickups.end(); ++it)
             DrawRadarIcon(*it, gRevealSprites[it->type], playerZ, pickupHalf, pickupLimit);
+    }
+
+    if (gAssetsShown) {
+        float assetHalf = IconHalfSize(gAssetIconScale);
+        float assetLimit = RadarEdgeLimit(assetHalf);
+        for (std::vector<CollectibleIcon>::const_iterator it = gAssets.begin(); it != gAssets.end(); ++it)
+            DrawRadarIcon(*it, gAssetSprite, playerZ, assetHalf, assetLimit);
     }
 }
 
@@ -569,40 +662,86 @@ static void __cdecl DrawBlips_Hook() {
     DrawCollectibles();
 }
 
+static char *RowLabelKey(int kind) {
+    if (kind == ROW_ASSETS)
+        return (char *)KEY_ASSET_LABEL;
+    if (kind == ROW_COLLECT)
+        return (char *)KEY_LABEL;
+    return (char *)KEY_REVEAL_LABEL;
+}
+
+static char *RowValueKey(int kind) {
+    if (kind == ROW_ASSETS)
+        return (char *)(gAssetsShown ? KEY_ON : KEY_OFF);
+    if (kind == ROW_COLLECT)
+        return (char *)KEY_MODE[gMode];
+    return (char *)KEY_REVEAL[gRevealMode];
+}
+
+static void BuildRowLayout() {
+    for (int i = 0; i < MAX_MENU_ROWS; i++)
+        gRowKind[i] = -1;
+    for (int i = 0; i < ROW_KIND_COUNT; i++)
+        gKindRow[i] = -1;
+
+    int row = FIRST_EXTRA_ROW;
+    if (gAssetsRow) {
+        gKindRow[ROW_ASSETS] = row;
+        gRowKind[row++] = ROW_ASSETS;
+    }
+    gKindRow[ROW_COLLECT] = row;
+    gRowKind[row++] = ROW_COLLECT;
+    if (gRevealRow) {
+        gKindRow[ROW_PICKUPS] = row;
+        gRowKind[row++] = ROW_PICKUPS;
+    }
+    gLastRow = row - 1;
+}
+
 static tMenuPanel ** __cdecl InsertMenu_Hook(unsigned char panelId, unsigned char columnId, char *title,
                                              char *s1, char *s2, char *s3, char *s4, char *s5, char *s6,
                                              char *s7, char *s8, char *s9, char *s10, char *s11, char *s12) {
-    if (columnId == 0) {
-        s6 = (char *)KEY_LABEL;
-        if (gRevealRow)
-            s7 = (char *)KEY_REVEAL_LABEL;
-        gIconsValid = false;
-        if (MenuNumber[panelId])
-            MenuNumber[panelId]->m_afColumnWidth[1] = MenuNumber[panelId]->m_afColumnWidth[0] * 1.6f;
-    }
-    else if (columnId == 1) {
-        s6 = (char *)KEY_MODE[gMode];
-        if (gRevealRow)
-            s7 = (char *)KEY_REVEAL[gRevealMode];
+    char *slots[MAX_MENU_ROWS] = { s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12 };
+
+    if (columnId == 0 || columnId == 1) {
+        for (int kind = 0; kind < ROW_KIND_COUNT; kind++) {
+            int row = gKindRow[kind];
+            if (row >= 0)
+                slots[row] = columnId == 0 ? RowLabelKey(kind) : RowValueKey(kind);
+        }
     }
 
-    return CMenuSystem::InsertMenu(panelId, columnId, title, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12);
+    if (columnId == 0) {
+        gIconsValid = false;
+
+        tMenuPanel *panel = MenuNumber[panelId];
+        if (panel) {
+            float wanted = panel->m_afColumnWidth[0] * 1.6f;
+            if (panel->m_afColumnWidth[1] < wanted)
+                panel->m_afColumnWidth[1] = wanted;
+        }
+    }
+
+    return CMenuSystem::InsertMenu(panelId, columnId, title, slots[0], slots[1], slots[2], slots[3],
+                                   slots[4], slots[5], slots[6], slots[7], slots[8], slots[9],
+                                   slots[10], slots[11]);
 }
 
 static char __cdecl CheckForAccept_Hook(unsigned char panelId) {
     char row = CMenuSystem::CheckForAccept(panelId);
-    if (row != COLLECT_ROW && !(gRevealRow && row == REVEAL_ROW))
+    if (row < FIRST_EXTRA_ROW || row >= MAX_MENU_ROWS || gRowKind[row] < 0)
         return row;
 
-    if (row == COLLECT_ROW) {
+    int kind = gRowKind[row];
+    if (kind == ROW_COLLECT)
         gMode = (gMode + 1) % MODE_COUNT;
-        CMenuSystem::InsertOneMenuItem(panelId, 1, COLLECT_ROW, (char *)KEY_MODE[gMode]);
-    }
-    else {
+    else if (kind == ROW_PICKUPS)
         gRevealMode = (gRevealMode + 1) % REVEAL_COUNT;
-        CMenuSystem::InsertOneMenuItem(panelId, 1, REVEAL_ROW, (char *)KEY_REVEAL[gRevealMode]);
-    }
-    gIconsValid = false;
+    else
+        gAssetsShown = !gAssetsShown;
+
+    OnModeChanged();
+    CMenuSystem::InsertOneMenuItem(panelId, 1, (unsigned char)row, RowValueKey(kind));
 
     if (MenuNumber[panelId])
         MenuNumber[panelId]->m_nAcceptedRow = -99;
@@ -619,6 +758,8 @@ static const char * __fastcall TextGet_Hook(CText *self, void *, const char *key
         }
         if (!strcmp(key, KEY_REVEAL_LABEL))
             return TEXT_REVEAL_LABEL;
+        if (!strcmp(key, KEY_ASSET_LABEL))
+            return TEXT_ASSET_LABEL;
         for (int i = 0; i < REVEAL_COUNT; i++) {
             if (!strcmp(key, KEY_REVEAL[i]))
                 return TEXT_REVEAL[i];
@@ -646,6 +787,9 @@ public:
         gLastSettingsPoll = GetTickCount();
         LoadSettings();
         gRevealRow = GetPrivateProfileIntA("Settings", "Pickups", 0, gIniPath) != 0;
+        gAssetsRow = GetPrivateProfileIntA("Settings", "Assets", 0, gIniPath) != 0;
+        BuildRowLayout();
+        LoadState();
 
         Events::initGameEvent += [] { InitDebugMenu(); };
 
@@ -657,7 +801,7 @@ public:
         patch::RedirectCall(CALL_DRAW_MAP_SPRITE, MapSprite_Hook);
         patch::RedirectCall(CALL_DRAW_MAP_BLIPS, DrawBlips_Hook);
         patch::RedirectCall(CALL_DRAW_RADAR_MAP, DrawRadarMap_Hook);
-        patch::SetUChar(BYTE_LAST_ROW_INDEX, gRevealRow ? REVEAL_ROW : COLLECT_ROW);
+        patch::SetUChar(BYTE_LAST_ROW_INDEX, (unsigned char)gLastRow);
 
         for (uintptr_t address : CALL_TEXT_GET) {
             if (*(unsigned char *)address == 0xE8)
