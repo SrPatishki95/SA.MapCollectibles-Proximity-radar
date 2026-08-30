@@ -71,6 +71,30 @@ static const char *TEX_REVEAL[REVEAL_COUNT] = {
     NULL, "armor", "weapon", "bribe", NULL
 };
 
+// Per-weapon icons, indexed by weapon type, with the jetpack — which is a pickup but not a
+// weapon — parked on the end. A name pickups.txd does not have falls back to "weapon", so an
+// older icon pack keeps working.
+static const int WEAPON_JETPACK = 47;
+static const int WEAPON_TEX_COUNT = 48;
+static const short MODEL_JETPACK_PICKUP = 370;
+
+static const char *TEX_WEAPON[WEAPON_TEX_COUNT] = {
+    NULL,
+    "brass", "golf", "nitestick", "knife", "bat", "shovel", "poolcue", "katana", "chainsaw",
+    "dildo1", "dildo2", "dildo3", "dildo3", "flowers", "cane",
+    "grenade", "teargas", "molotov",
+    NULL, NULL, NULL,
+    "colt", "silenced", "deagle",
+    "chromegun", "sawnoff", "spas",
+    "microuzi", "mp5", "ak", "m4", "tec9",
+    "cuntrifle", "sniper",
+    "rocket", "heatseek", "flame", "minigun",
+    "satchel", NULL,
+    "spray", "extinguisher", "camera",
+    "googlenv", "google2", "parachute",
+    "jetpack"
+};
+
 static const char KEY_ASSET_LABEL[]  = "FED_BL8";
 static const char TEXT_ASSET_LABEL[] = "Assets";
 static const char TEX_ASSET[]        = "asset";
@@ -139,9 +163,11 @@ struct CollectibleIcon {
     CVector2D posn;
     float     z;
     int       type;
+    int       weapon;
 };
 
 static CSprite2d gRevealSprites[REVEAL_COUNT];
+static CSprite2d gWeaponSprites[WEAPON_TEX_COUNT];
 static CSprite2d gAssetSprite;
 
 static int gRowKind[MAX_MENU_ROWS];
@@ -286,6 +312,10 @@ static void LoadTextures() {
     CTxdStore::SetCurrentTxd(revealSlot);
     for (int i = REVEAL_ARMOR; i < REVEAL_ALL; i++)
         gRevealSprites[i].SetTexture((char *)TEX_REVEAL[i]);
+    for (int i = 1; i < WEAPON_TEX_COUNT; i++) {
+        if (TEX_WEAPON[i])
+            gWeaponSprites[i].SetTexture((char *)TEX_WEAPON[i]);
+    }
     gAssetSprite.SetTexture((char *)TEX_ASSET);
     CTxdStore::PopCurrentTxd();
 }
@@ -310,6 +340,7 @@ static void Sort(bool collected, int type, float x, float y, float z) {
     icon.posn = CVector2D(x, y);
     icon.z = z;
     icon.type = type;
+    icon.weapon = 0;
     (collected ? gCollected : gRemaining).push_back(icon);
 }
 
@@ -361,7 +392,9 @@ static bool IsPersistentPickup(unsigned char type) {
     return type == PICKUP_ON_STREET || type == PICKUP_ON_STREET_SLOW;
 }
 
-static int PickupCategory(short modelId) {
+static int PickupCategory(short modelId, int &weapon) {
+    weapon = 0;
+
     if (modelId <= 0 || modelId >= 20000)
         return REVEAL_OFF;
 
@@ -371,9 +404,25 @@ static int PickupCategory(short modelId) {
         return REVEAL_BRIBES;
     if (modelId >= MODEL_INFO && modelId <= MODEL_KILLFRENZY)
         return REVEAL_OFF;
-    if (CPickups::WeaponForModel(modelId) > 0)
+    if (modelId == MODEL_JETPACK_PICKUP) {
+        weapon = WEAPON_JETPACK;
         return REVEAL_WEAPONS;
+    }
+
+    int type = CPickups::WeaponForModel(modelId);
+    if (type > 0) {
+        if (type < WEAPON_JETPACK)
+            weapon = type;
+        return REVEAL_WEAPONS;
+    }
     return REVEAL_OFF;
+}
+
+// The per-weapon icon when the txd has one, the plain "weapon" icon when it does not.
+static CSprite2d &PickupSprite(const CollectibleIcon &icon) {
+    if (icon.weapon > 0 && gWeaponSprites[icon.weapon].m_pTexture)
+        return gWeaponSprites[icon.weapon];
+    return gRevealSprites[icon.type];
 }
 
 static void GatherPickups() {
@@ -398,7 +447,8 @@ static void GatherPickups() {
         if (pickup.m_nPickupType == PICKUP_NONE)
             continue;
 
-        int category = PickupCategory(pickup.m_nModelIndex);
+        int weapon = 0;
+        int category = PickupCategory(pickup.m_nModelIndex, weapon);
         if (category == REVEAL_OFF)
             continue;
 
@@ -417,10 +467,12 @@ static void GatherPickups() {
             reject = "other-category";
 
         if (log) {
-            fprintf(log, "  slot=%3u model=%5d type=%2u flags=%02X cat=%d pos=%.1f,%.1f,%.1f %s\n",
+            fprintf(log, "  slot=%3u model=%5d type=%2u flags=%02X cat=%d wep=%2d icon=%s pos=%.1f,%.1f,%.1f %s\n",
                     i, pickup.m_nModelIndex, pickup.m_nPickupType,
-                    *(unsigned char *)&pickup.m_nFlags, category, x, y, z,
-                    reject ? reject : "SHOWN");
+                    *(unsigned char *)&pickup.m_nFlags, category, weapon,
+                    (weapon > 0 && TEX_WEAPON[weapon] && gWeaponSprites[weapon].m_pTexture)
+                        ? TEX_WEAPON[weapon] : "weapon",
+                    x, y, z, reject ? reject : "SHOWN");
         }
 
         if (reject)
@@ -430,6 +482,7 @@ static void GatherPickups() {
         icon.posn = CVector2D(x, y);
         icon.z = z;
         icon.type = category;
+        icon.weapon = weapon;
         gPickups.push_back(icon);
     }
 
@@ -457,6 +510,7 @@ static void GatherAssets() {
         icon.posn = CVector2D(pickup.m_vecPos.x * 0.125f, pickup.m_vecPos.y * 0.125f);
         icon.z = z;
         icon.type = 0;
+        icon.weapon = 0;
         gAssets.push_back(icon);
     }
 }
@@ -545,7 +599,7 @@ static void DrawCollectibles() {
     }
 
     for (std::vector<CollectibleIcon>::const_iterator it = gPickups.begin(); it != gPickups.end(); ++it)
-        DrawMapIcon(gRevealSprites[it->type], it->posn, 255, scaleX, scaleY, pickupHalf);
+        DrawMapIcon(PickupSprite(*it), it->posn, 255, scaleX, scaleY, pickupHalf);
 
     float assetHalf = IconHalfSize(gAssetIconScale);
     for (std::vector<CollectibleIcon>::const_iterator it = gAssets.begin(); it != gAssets.end(); ++it)
@@ -600,7 +654,7 @@ static void DrawRadarCollectibles() {
 
     if (showPickups) {
         for (std::vector<CollectibleIcon>::const_iterator it = gPickups.begin(); it != gPickups.end(); ++it)
-            DrawRadarIcon(*it, gRevealSprites[it->type], playerZ, pickupHalf, pickupLimit);
+            DrawRadarIcon(*it, PickupSprite(*it), playerZ, pickupHalf, pickupLimit);
     }
 
     if (gAssetsShown) {

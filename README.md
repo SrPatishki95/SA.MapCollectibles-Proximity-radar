@@ -65,7 +65,25 @@ INI**. Debug menu changes are not overwritten by the file watcher.
 
 Custom icons: replace `MapCollectibles/collectibles.txd`, keeping the texture
 names `graffiti`, `snapshot`, `horseshoe`, `oyster` and `usj`, and
-`MapCollectibles/pickups.txd`, keeping `armor`, `weapon` and `bribe`.
+`MapCollectibles/pickups.txd`, keeping `armor`, `weapon`, `bribe` and `asset`.
+
+Weapon pickups can have an icon each. `pickups.txd` is searched for a texture
+named after the weapon, and the plain `weapon` icon is used for any that is
+missing, so a txd with only the four names above still works.
+
+| | |
+| --- | --- |
+| Melee | `brass` `golf` `nitestick` `knife` `bat` `shovel` `poolcue` `katana` `chainsaw` `dildo1` `dildo2` `dildo3` `flowers` `cane` |
+| Thrown | `grenade` `teargas` `molotov` `satchel` |
+| Handguns | `colt` `silenced` `deagle` |
+| Shotguns | `chromegun` `sawnoff` `spas` |
+| Automatic | `microuzi` `mp5` `tec9` `ak` `m4` |
+| Rifles | `cuntrifle` `sniper` |
+| Heavy | `rocket` `heatseek` `flame` `minigun` |
+| Other | `spray` `extinguisher` `camera` `googlenv` `google2` `parachute` `jetpack` |
+
+`dildo3` covers both vibrators, `googlenv` is the night vision goggles and
+`google2` the thermal ones.
 
 ## How it works
 
