@@ -65,11 +65,13 @@ INI**. Debug menu changes are not overwritten by the file watcher.
 
 Custom icons: replace `MapCollectibles/collectibles.txd`, keeping the texture
 names `graffiti`, `snapshot`, `horseshoe`, `oyster` and `usj`, and
-`MapCollectibles/pickups.txd`, keeping `armor`, `weapon`, `bribe` and `asset`.
+`MapCollectibles/pickups.txd`, keeping `armor`, `bribe`, `asset` and either
+`weapon` or `colt`.
 
 Weapon pickups can have an icon each. `pickups.txd` is searched for a texture
-named after the weapon, and the plain `weapon` icon is used for any that is
-missing, so a txd with only the four names above still works.
+named after the weapon, and anything it does not have falls back to `weapon`,
+or to the pistol icon `colt` when there is no `weapon` texture — so a txd with
+only the names above still works.
 
 | | |
 | --- | --- |

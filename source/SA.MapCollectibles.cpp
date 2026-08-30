@@ -316,6 +316,11 @@ static void LoadTextures() {
         if (TEX_WEAPON[i])
             gWeaponSprites[i].SetTexture((char *)TEX_WEAPON[i]);
     }
+
+    // The marker for a weapon the txd has no icon for. "weapon" is the pistol icon under
+    // another name, so a txd that carries it only once, as "colt", still has one to use.
+    if (!gRevealSprites[REVEAL_WEAPONS].m_pTexture)
+        gRevealSprites[REVEAL_WEAPONS].SetTexture((char *)TEX_WEAPON[WEAPONTYPE_PISTOL]);
     gAssetSprite.SetTexture((char *)TEX_ASSET);
     CTxdStore::PopCurrentTxd();
 }
