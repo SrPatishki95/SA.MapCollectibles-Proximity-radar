@@ -1,0 +1,43 @@
+name: Build ASI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Clone Plugin-SDK
+        run: |
+          git clone --depth 1 https://github.com/DK22Pac/plugin-sdk.git D:\plugin-sdk
+
+      - name: Build Plugin-SDK for GTA SA
+        working-directory: D:\plugin-sdk
+        run: |
+          msbuild plugin_sa\plugin_sa.vcxproj /p:Configuration="Release" /p:Platform="Win32" /p:PlatformToolset=v143
+          if (Test-Path "D:\plugin-sdk\output\lib\plugin_sa.lib") {
+            Copy-Item "D:\plugin-sdk\output\lib\plugin_sa.lib" "D:\plugin-sdk\output\lib\plugin.lib"
+          }
+
+      - name: Build Mod ASI
+        env:
+          PLUGIN_SDK_DIR: D:\plugin-sdk
+        run: |
+          msbuild SA.MapCollectibles.vcxproj /p:Configuration="Release GTA-SA" /p:Platform="Win32" /p:PlatformToolset=v143
+
+      - name: Upload ASI Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SA.MapCollectibles-Proximity
+          path: bin/GTA-SA/Release/*.asi
