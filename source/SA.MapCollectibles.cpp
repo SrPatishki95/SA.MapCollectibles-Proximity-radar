@@ -12,6 +12,7 @@
 #include "CGame.h"
 #include "CHud.h"
 #include "CCutsceneMgr.h"
+#include "CCamera.h"
 #include "CollectibleCoords.h"
 #include <string.h>
 #include <stdio.h>
@@ -176,12 +177,70 @@ static std::vector<CollectibleIcon> gPickups;
 static std::vector<CollectibleIcon> gAssets;
 
 // =========================================================================
-// VARIABLES DEL MODO INMERSIVO / PROXIMIDAD
+// MODO INMERSIVO: VARIABLES Y CONTROL DE TECLA F12
 // =========================================================================
-static bool gProximityMode = true; // Por defecto arranca en modo busqueda inmersivo
+static bool gProximityMode = true; // Por defecto arranca en modo busqueda
 static bool gF12Down = false;
 static int gLastNotifiedId = -1;
 static unsigned int gLastHelpTime = 0;
+static const float gTriggerDist = 75.0f; // Distancia exacta unificada (75 metros)
+
+static CRGBA GetThemeColor(int type, unsigned char alpha = 255) {
+    switch (type) {
+    case MODE_TAGS:       return CRGBA(40, 215, 60, alpha);   // Verde Grove
+    case MODE_SNAPSHOTS:  return CRGBA(50, 150, 255, alpha);  // Azul Camara
+    case MODE_HORSESHOES: return CRGBA(255, 195, 25, alpha);  // Dorado Casino
+    case MODE_OYSTERS:    return CRGBA(0, 225, 235, alpha);   // Cyan Marino
+    case MODE_JUMPS:      return CRGBA(255, 65, 40, alpha);   // Rojo Acrobatico
+    default:              return CRGBA(255, 215, 0, alpha);
+    }
+}
+
+// Centro desfasado determinista (Fijo, nunca tiembla)
+static CVector2D ComputeSearchZoneCenter(const CVector2D &pos, int type) {
+    unsigned int hash = (static_cast<unsigned int>(pos.x * 10.0f) * 2246822519u) ^
+                        (static_cast<unsigned int>(pos.y * 10.0f) * 3266489917u) ^
+                        (static_cast<unsigned int>(type) * 2654435761u);
+
+    float angle = (hash % 360) * (3.14159265f / 180.0f);
+    float offsetDist = 18.0f + static_cast<float>((hash >> 8) % 12); // Desfase de 18 a 30m
+
+    return CVector2D(pos.x + cosf(angle) * offsetDist,
+                     pos.y + sinf(angle) * offsetDist);
+}
+
+// Dibujado de disco difuso con borde desvanecido (RenderWare 2D)
+static void DrawSoftCircle2D(float screenX, float screenY, float radius, CRGBA color) {
+    const int NUM_SEGS = 20;
+    RwIm2DVertex vertices[NUM_SEGS + 2];
+
+    RwIm2DVertexSetScreenX(&vertices[0], screenX);
+    RwIm2DVertexSetScreenY(&vertices[0], screenY);
+    RwIm2DVertexSetScreenZ(&vertices[0], 0.0f);
+    RwIm2DVertexSetRecipCameraZ(&vertices[0], 1.0f);
+    RwIm2DVertexSetIntRGBA(&vertices[0], color.r, color.g, color.b, color.a);
+
+    for (int i = 0; i <= NUM_SEGS; ++i) {
+        float angle = (i % NUM_SEGS) * (6.2831853f / static_cast<float>(NUM_SEGS));
+        float vx = screenX + cosf(angle) * radius;
+        float vy = screenY + sinf(angle) * radius;
+
+        RwIm2DVertexSetScreenX(&vertices[i + 1], vx);
+        RwIm2DVertexSetScreenY(&vertices[i + 1], vy);
+        RwIm2DVertexSetScreenZ(&vertices[i + 1], 0.0f);
+        RwIm2DVertexSetRecipCameraZ(&vertices[i + 1], 1.0f);
+        RwIm2DVertexSetIntRGBA(&vertices[i + 1], color.r, color.g, color.b, 0); // Borde transparente
+    }
+
+    RwRenderStateSet(rwRENDERSTATETEXTURERASTER, (void *)nullptr);
+    RwRenderStateSet(rwRENDERSTATEZTESTENABLE, (void *)FALSE);
+    RwRenderStateSet(rwRENDERSTATEZWRITEENABLE, (void *)FALSE);
+    RwRenderStateSet(rwRENDERSTATEVERTEXALPHAENABLE, (void *)TRUE);
+    RwRenderStateSet(rwRENDERSTATESRCBLEND, (void *)rwBLENDSRCALPHA);
+    RwRenderStateSet(rwRENDERSTATEDESTBLEND, (void *)rwBLENDINVSRCALPHA);
+
+    RwIm2DRenderPrimitive(rwPRIMTYPETRIFAN, vertices, NUM_SEGS + 2);
+}
 
 static void TakeIniStamp() {
     WIN32_FILE_ATTRIBUTE_DATA data;
@@ -287,7 +346,6 @@ static void InitDebugMenu() {
     DebugMenuAddCmd(MENU, "Save settings to INI", CmdSaveIni);
 }
 
-// Carga inteligente de texturas compatible con cualquier carpeta
 static void LoadTextures() {
     if (gTexturesTried)
         return;
@@ -592,7 +650,7 @@ static void DrawMapIcon(CSprite2d &sprite, const CVector2D &posn, unsigned char 
     sprite.Draw(CRect(x - half, y - half, x + half, y + half), CRGBA(255, 255, 255, alpha));
 }
 
-// DIBUJADO EN EL MAPA DE PAUSA (CON SOPORTE DE PROXIMIDAD Y F12)
+// DIBUJADO EN EL MAPA DE PAUSA
 static void DrawCollectibles() {
     PollSettings();
 
@@ -608,7 +666,7 @@ static void DrawCollectibles() {
     float scaleY = gMapHeight / (WORLD_HALF_SIZE * 2.0f);
 
     if (gProximityMode) {
-        // MODO INMERSIVO: Solo dibujamos en el mapa el coleccionable mas cercano si estamos cerca
+        // EN NUESTRO MODO: Dibujar la ZONA DIFUSA DESFASADA (estilo RDR2) a <= 75m
         CVector player = FindPlayerCoors(0);
         const CollectibleIcon *closest = nullptr;
         float closestDistSq = 9999999.0f;
@@ -623,16 +681,23 @@ static void DrawCollectibles() {
             }
         }
 
-        // Solo dibujarlo si estamos a menos de 160m de el
-        if (closest && closestDistSq <= (160.0f * 160.0f)) {
-            DrawMapIcon(gSprites[closest->type], closest->posn, (unsigned char)gFinderMapAlpha, scaleX, scaleY, half);
+        if (closest && closestDistSq <= (gTriggerDist * gTriggerDist)) {
+            CVector2D zoneCenter = ComputeSearchZoneCenter(closest->posn, closest->type);
+            float x = gMapLeft + (zoneCenter.x + WORLD_HALF_SIZE) * scaleX;
+            float y = gMapTop + (WORLD_HALF_SIZE - zoneCenter.y) * scaleY;
+            float zoneRadiusScreen = 35.0f * scaleX; // Radio de 35 metros cubriendo la manzana
+
+            if (x >= gMapLeft && x <= gMapLeft + gMapWidth && y >= gMapTop && y <= gMapTop + gMapHeight) {
+                CRGBA col = GetThemeColor(closest->type, 90);
+                DrawSoftCircle2D(x, y, zoneRadiusScreen, col);
+            }
         }
 
-        // Ya completados
+        // Los ya completados se siguen mostrando normalmente
         for (std::vector<CollectibleIcon>::const_iterator it = gCollected.begin(); it != gCollected.end(); ++it)
             DrawMapIcon(gSprites[it->type], it->posn, 255, scaleX, scaleY, half);
     } else {
-        // MODO FLENTRIC ORIGINAL: dibuja todos
+        // MODO FLENTRIC ORIGINAL (F12): Dibuja todos los iconos fijos exactos
         for (int pass = 0; pass < 2; pass++) {
             if (pass == 0 && !gFinderEnabled)
                 continue;
@@ -674,7 +739,7 @@ static void DrawRadarIcon(const CollectibleIcon &icon, CSprite2d &sprite, float 
                 CRGBA(255, 255, 255, 255));
 }
 
-// DIBUJADO EN EL RADAR (CON LIMITE DE 1 SOLO COLECCIONABLE CERCANO)
+// DIBUJADO EN EL RADAR
 static void DrawRadarCollectibles() {
     PollSettings();
 
@@ -697,7 +762,7 @@ static void DrawRadarCollectibles() {
 
     if (showFinder) {
         if (gProximityMode) {
-            // MODO INMERSIVO: Buscar estrictamente EL UNICO mas cercano
+            // EN NUESTRO MODO: Dibujar la ZONA DIFUSA DESFASADA (estilo RDR2) a <= 75m
             const CollectibleIcon *closest = nullptr;
             float closestDistSq = 9999999.0f;
 
@@ -711,12 +776,21 @@ static void DrawRadarCollectibles() {
                 }
             }
 
-            // Dibuja 1 solo icono en el radar a menos de 75 metros
-            if (closest && closestDistSq <= (75.0f * 75.0f)) {
-                DrawRadarIcon(*closest, gSprites[closest->type], playerZ, half, limit);
+            if (closest && closestDistSq <= (gTriggerDist * gTriggerDist)) {
+                CVector2D zoneCenter = ComputeSearchZoneCenter(closest->posn, closest->type);
+
+                CVector2D radarSpace, screen;
+                CRadar::TransformRealWorldPointToRadarSpace(radarSpace, zoneCenter);
+
+                if (radarSpace.x * radarSpace.x + radarSpace.y * radarSpace.y <= limit * 1.3f) {
+                    CRadar::TransformRadarPointToScreenSpace(screen, radarSpace);
+                    float zoneRadiusScreen = half * 3.5f; // Tamano visual del area en el radar
+                    CRGBA col = GetThemeColor(closest->type, 85);
+                    DrawSoftCircle2D(screen.x, screen.y, zoneRadiusScreen, col);
+                }
             }
         } else {
-            // MODO FLENTRIC ORIGINAL: dibuja todos
+            // MODO FLENTRIC ORIGINAL (F12): Dibuja todos los iconos fijos exactos
             for (std::vector<CollectibleIcon>::const_iterator it = gRemaining.begin(); it != gRemaining.end(); ++it)
                 DrawRadarIcon(*it, gSprites[it->type], playerZ, half, limit);
         }
@@ -803,7 +877,7 @@ static char *RowValueKey(int kind) {
 }
 
 static void BuildRowLayout() {
-    for (int i = 0; i < MAX_MENU_ROWS; i++)\
+    for (int i = 0; i < MAX_MENU_ROWS; i++)
         gRowKind[i] = -1;
     for (int i = 0; i < ROW_KIND_COUNT; i++)
         gKindRow[i] = -1;
@@ -874,7 +948,7 @@ static char __cdecl CheckForAccept_Hook(unsigned char panelId) {
 
 static const char * __fastcall TextGet_Hook(CText *self, void *, const char *key) {
     if (key) {
-        if (!strcmp(key, KEY_LABEL))\
+        if (!strcmp(key, KEY_LABEL))
             return TEXT_LABEL;
         for (int i = 0; i < MODE_COUNT; i++) {
             if (!strcmp(key, KEY_MODE[i]))
@@ -919,7 +993,6 @@ public:
 
         // LOGICA DE PROXIMIDAD Y F12
         Events::gameProcessEvent += [] {
-            // Tecla F12 para alternar entre modo original y modo inmersivo
             bool f12Pressed = (GetAsyncKeyState(VK_F12) & 0x8000) != 0;
             if (f12Pressed && !gF12Down) {
                 gF12Down = true;
@@ -933,8 +1006,8 @@ public:
                 gF12Down = false;
             }
 
-            // Aviso de la cajita negra oficial al entrar a 60 metros (solo en modo inmersivo)
-            if (gProximityMode && !FrontEndMenuManager.m_bMenuActive && !CTimer::m_UserPause && !CCutsceneMgr::ms_running) {
+            // Aviso de la cajita negra oficial a exactamente 75 metros
+            if (gProximityMode && !FrontEndMenuManager.m_bMenuActive && !CTimer::m_UserPause && !CCutsceneMgr::ms_running && !TheCamera.m_bWideScreenOn) {
                 CPlayerPed *player = FindPlayerPed();
                 if (player && player->m_fHealth > 0.0f && player->m_nAreaCode == 0) {
                     CVector playerCoors = FindPlayerCoors(0);
@@ -955,14 +1028,14 @@ public:
                     }
 
                     unsigned int now = CTimer::m_snTimeInMilliseconds;
-                    if (found && closestDistSq <= (75.0f * 75.0f)) {
+                    if (found && closestDistSq <= (gTriggerDist * gTriggerDist)) {
                         int uniqueId = static_cast<int>(closestX * 10.0f) + static_cast<int>(closestY * 10.0f);
                         if (gLastNotifiedId != uniqueId && (now - gLastHelpTime > 8000)) {
                             gLastNotifiedId = uniqueId;
                             gLastHelpTime = now;
-                            CHud::SetHelpMessage("Hay un coleccionable cerca.", true, false, false);
+                            CHud::SetHelpMessage("Zona de busqueda: Hay un coleccionable en las inmediaciones.", true, false, false);
                         }
-                    } else if (closestDistSq > (105.0f * 105.0f)) {
+                    } else if (closestDistSq > ((gTriggerDist + 30.0f) * (gTriggerDist + 30.0f))) {
                         gLastNotifiedId = -1;
                     }
                 }
