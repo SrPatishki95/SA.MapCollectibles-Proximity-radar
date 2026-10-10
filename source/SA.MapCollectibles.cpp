@@ -3,7 +3,6 @@
 #include "CPlayerPed.h"
 #include "CWorld.h"
 #include "CPickups.h"
-#include "CTagManager.h"
 #include "CAudioEngine.h"
 #include "CMenuManager.h"
 #include "CTimer.h"
@@ -37,13 +36,13 @@ struct CollectibleItem {
     int id;
 };
 
-// Graffitis en memoria
-struct tTagDesc {
+// Graffitis en memoria (con nombre unico para evitar conflictos con el SDK)
+struct MyTagDesc {
     CEntity *m_pEntity;
     unsigned char m_nAlpha;
     char _pad[3];
 };
-static tTagDesc *const gTagDesc = (tTagDesc *)0xA9A8C0;
+static MyTagDesc *const gTagDesc = (MyTagDesc *)0xA9A8C0;
 static int &gNumTags = *(int *)0xA9AD70;
 static const unsigned char TAG_SPRAYED_ALPHA = 0xE4;
 
@@ -102,14 +101,17 @@ static CVector2D ComputeSearchZoneCenter(const CVector &pos, int id) {
                      pos.y + sinf(angle) * offsetDist);
 }
 
+// Descompresion de posicion de pickup nativa de GTA SA
 static bool PickupStillPresent(const float coord[3]) {
     for (int i = 0; i < 620; ++i) {
         CPickup &p = CPickups::aPickUps[i];
         if (p.m_nPickupType == 0) continue;
-        CVector pos = p.m_vecPos;
-        float dx = pos.x - coord[0];
-        float dy = pos.y - coord[1];
-        float dz = pos.z - coord[2];
+        float px = static_cast<float>(p.m_vecPos.x) / 8.0f;
+        float py = static_cast<float>(p.m_vecPos.y) / 8.0f;
+        float pz = static_cast<float>(p.m_vecPos.z) / 8.0f;
+        float dx = px - coord[0];
+        float dy = py - coord[1];
+        float dz = pz - coord[2];
         if ((dx * dx + dy * dy + dz * dz) < 1.0f) {
             return true;
         }
@@ -205,7 +207,7 @@ static void RebuildIconsIfStale() {
     }
 }
 
-// Dibujado del circulo difuso estilo RDR2
+// Dibujado del circulo difuso estilo RDR2 con RenderWare
 static void DrawSoftSearchCircle(float screenX, float screenY, float radius, unsigned char r, unsigned char g, unsigned char b, unsigned char centerAlpha) {
     const int NUM_SEGS = 24;
     RwIm2DVertex vertices[NUM_SEGS + 2];
@@ -235,7 +237,7 @@ static void DrawSoftSearchCircle(float screenX, float screenY, float radius, uns
     RwRenderStateSet(rwRENDERSTATESRCBLEND, (void *)rwBLENDSRCALPHA);
     RwRenderStateSet(rwRENDERSTATEDESTBLEND, (void *)rwBLENDINVSRCALPHA);
 
-    RwIm2DVertexPrimitive(rwPRIMTYPETRIFAN, vertices, NUM_SEGS + 2);
+    RwIm2DRenderPrimitive(rwPRIMTYPETRIFAN, vertices, NUM_SEGS + 2);
 }
 
 // Dibujado de iconos exactos (Plan B)
