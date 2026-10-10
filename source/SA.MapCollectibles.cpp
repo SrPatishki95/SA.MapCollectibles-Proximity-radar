@@ -8,6 +8,7 @@
 #include "CTimer.h"
 #include "CRadar.h"
 #include "CSprite2d.h"
+#include "CTxdStore.h"
 #include "CStuntJumpManager.h"
 #include "CHud.h"
 #include "CCutsceneMgr.h"
@@ -48,8 +49,9 @@ static const unsigned char TAG_SPRAYED_ALPHA = 0xE4;
 static bool gEnableHelpMessage = true;
 static bool gEnableSearchZones = true;
 static bool gShowExactIcons = false;       // Se conmuta con F12
-static float gSearchRadius = 55.0f;       // Radio en metros (~1 cuadra)
+static float gSearchRadius = 55.0f;       // Radio de la zona en metros
 static float gNotificationDist = 60.0f;   // Distancia de la cajita negra
+static const float gMaxDisplayDist = 160.0f; // FILTRO: Solo mostrar si esta a menos de 160m
 
 // Estados
 static std::vector<CollectibleItem> gRemaining;
@@ -60,7 +62,55 @@ static int gCurrentNearZoneId = -1;
 static unsigned int gLastHelpMessageTime = 0;
 static bool gF12WasPressed = false;
 
-// Calculo del centro desfasado determinista (Fijo, nunca tiembla)
+// Sprites originales de Flentric desde collectibles.txd
+static CSprite2d gSprites[5];
+static bool gSpritesLoaded = false;
+
+static void LoadFlentricSprites() {
+    if (gSpritesLoaded) return;
+
+    char path[MAX_PATH] = { 0 };
+    char const *pluginPath = PLUGIN_PATH("collectibles.txd");
+
+    if (GetFileAttributesA(pluginPath) != INVALID_FILE_ATTRIBUTES) {
+        strcpy_s(path, pluginPath);
+    } else if (GetFileAttributesA("collectibles.txd") != INVALID_FILE_ATTRIBUTES) {
+        GetFullPathNameA("collectibles.txd", MAX_PATH, path, nullptr);
+    } else if (GetFileAttributesA("models\\collectibles.txd") != INVALID_FILE_ATTRIBUTES) {
+        GetFullPathNameA("models\\collectibles.txd", MAX_PATH, path, nullptr);
+    }
+
+    if (path[0] != '\0') {
+        int txdSlot = CTxdStore::AddTxdSlot("collectibles_mod");
+        CTxdStore::LoadTxd(txdSlot, path);
+        CTxdStore::AddRef(txdSlot);
+        CTxdStore::PushCurrentTxd();
+        CTxdStore::SetCurrentTxd(txdSlot);
+
+        gSprites[MODE_TAGS].SetTexture("tag");
+        gSprites[MODE_SNAPSHOTS].SetTexture("snapshot");
+        gSprites[MODE_HORSESHOES].SetTexture("horseshoe");
+        gSprites[MODE_OYSTERS].SetTexture("oyster");
+        gSprites[MODE_JUMPS].SetTexture("jump");
+
+        CTxdStore::PopCurrentTxd();
+        gSpritesLoaded = true;
+    }
+}
+
+// Colores tematicos por coleccionable
+static CRGBA GetThemeColor(int type, unsigned char alpha = 255) {
+    switch (type) {
+    case MODE_TAGS:       return CRGBA(40, 215, 60, alpha);   // Verde Grove para Tags
+    case MODE_SNAPSHOTS:  return CRGBA(50, 150, 255, alpha);  // Azul camara para Fotos
+    case MODE_HORSESHOES: return CRGBA(255, 195, 25, alpha);  // Dorado casino para Herraduras
+    case MODE_OYSTERS:    return CRGBA(0, 225, 235, alpha);   // Cyan oceano para Ostras
+    case MODE_JUMPS:      return CRGBA(255, 65, 40, alpha);   // Rojo acrobatico para Saltos
+    default:              return CRGBA(255, 215, 0, alpha);
+    }
+}
+
+// Calculo del centro desfasado fijo
 static CVector2D ComputeSearchZoneCenter(const CVector &pos, int id) {
     unsigned int hash = (static_cast<unsigned int>(id) * 2654435761u) ^
                         (static_cast<unsigned int>(pos.x * 10.0f) * 2246822519u) ^
@@ -178,7 +228,7 @@ static void RebuildIconsIfStale() {
     }
 }
 
-// Atajo F12
+// Atajo F12 para prender/apagar iconos
 static void CheckF12Hotkey() {
     bool isDown = (GetAsyncKeyState(VK_F12) & 0x8000) != 0;
     if (isDown && !gF12WasPressed) {
@@ -195,7 +245,7 @@ static void CheckF12Hotkey() {
     }
 }
 
-// Logica de proximidad (Cajita negra con sonido)
+// Logica de proximidad y la Cajita Negra oficial
 static void UpdateProximityLogic() {
     CheckF12Hotkey();
 
@@ -238,49 +288,56 @@ static void UpdateProximityLogic() {
     }
 }
 
-// Dibujado en el Radar oficial 100% nativo de GTA SA
+// Dibujado en el Radar: FILTRADO SOLO POR PROXIMIDAD
 static void DrawRadarElements() {
     CPlayerPed *player = FindPlayerPed();
     if (!player) return;
     CVector playerPos = player->GetPosition();
 
+    // Asegurarse de que los sprites de Flentric esten cargados
+    if (!gSpritesLoaded) {
+        LoadFlentricSprites();
+    }
+
+    const float maxDistSq = gMaxDisplayDist * gMaxDisplayDist;
+
     for (const auto &item : gRemaining) {
-        float dx = playerPos.x - item.searchCenter.x;
-        float dy = playerPos.y - item.searchCenter.y;
+        float dx = playerPos.x - item.pos.x;
+        float dy = playerPos.y - item.pos.y;
+        float distSq = dx * dx + dy * dy;
 
-        // Solo procesar si esta a menos de 250 metros
-        if ((dx * dx + dy * dy) <= (250.0f * 250.0f)) {
+        // FILTRO ESTRICTO: Si no esta en tu manzana (a menos de 160m), ignorarlo por completo
+        if (distSq > maxDistSq) {
+            continue;
+        }
 
-            // 1. Zona difusa estilo RDR2 usando CRect empaquetado
-            if (gEnableSearchZones) {
-                CRect zoneRect(
-                    item.searchCenter.x - gSearchRadius,
-                    item.searchCenter.y - gSearchRadius,
-                    item.searchCenter.x + gSearchRadius,
-                    item.searchCenter.y + gSearchRadius
-                );
-                CRadar::DrawAreaOnRadar(zoneRect, CRGBA(255, 215, 0, 75), true);
-            }
+        // 1. ZONA DIFUSA ESTILO RDR2 CON EL COLOR DEL COLECCIONABLE
+        if (gEnableSearchZones) {
+            CRect zoneRect(
+                item.searchCenter.x - gSearchRadius,
+                item.searchCenter.y - gSearchRadius,
+                item.searchCenter.x + gSearchRadius,
+                item.searchCenter.y + gSearchRadius
+            );
+            CRGBA zoneColor = GetThemeColor(item.type, 75);
+            CRadar::DrawAreaOnRadar(zoneRect, zoneColor, true);
+        }
 
-            // 2. Iconos exactos al apretar F12
-            if (gShowExactIcons) {
-                CRGBA col(255, 255, 255, 255);
-                switch (item.type) {
-                case MODE_TAGS:       col = CRGBA(50, 205, 50, 255); break;  // Verde
-                case MODE_SNAPSHOTS:  col = CRGBA(30, 144, 255, 255); break; // Azul
-                case MODE_HORSESHOES: col = CRGBA(255, 140, 0, 255); break; // Naranja
-                case MODE_OYSTERS:    col = CRGBA(0, 255, 255, 255); break;  // Cyan
-                case MODE_JUMPS:      col = CRGBA(255, 215, 0, 255); break;  // Amarillo
+        // 2. ICONO EXACTO ORIGINAL DE FLENTRIC (CON F12)
+        if (gShowExactIcons) {
+            CVector2D radarPoint;
+            CRadar::TransformRealWorldPointToRadarSpace(radarPoint, CVector2D(item.pos.x, item.pos.y));
+            if (radarPoint.Magnitude() <= 1.0f) {
+                CVector2D screenPos;
+                CRadar::TransformRadarPointToScreenSpace(screenPos, radarPoint);
+
+                if (gSpritesLoaded && gSprites[item.type].m_pTexture) {
+                    CRect iconRect(screenPos.x - 9.0f, screenPos.y - 9.0f, screenPos.x + 9.0f, screenPos.y + 9.0f);
+                    gSprites[item.type].Draw(iconRect, CRGBA(255, 255, 255, 255));
+                } else {
+                    CRect markerRect(item.pos.x - 3.0f, item.pos.y - 3.0f, item.pos.x + 3.0f, item.pos.y + 3.0f);
+                    CRadar::DrawAreaOnRadar(markerRect, GetThemeColor(item.type, 255), true);
                 }
-
-                // Marcador visible en el radar
-                CRect markerRect(
-                    item.pos.x - 3.0f,
-                    item.pos.y - 3.0f,
-                    item.pos.x + 3.0f,
-                    item.pos.y + 3.0f
-                );
-                CRadar::DrawAreaOnRadar(markerRect, col, true);
             }
         }
     }
@@ -290,6 +347,7 @@ class SearchCollectiblesPlugin {
 public:
     SearchCollectiblesPlugin() {
         Events::initGameEvent += [] {
+            LoadFlentricSprites();
             RebuildIcons();
         };
 
@@ -298,7 +356,6 @@ public:
             UpdateProximityLogic();
         };
 
-        // Evento nativo de Plugin-SDK blindado contra CLEO+
         Events::drawRadarOverlayEvent += [] {
             DrawRadarElements();
         };
