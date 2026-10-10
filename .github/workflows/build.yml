@@ -25,23 +25,37 @@ jobs:
       - name: Build Plugin-SDK
         shell: powershell
         run: |
-          # Descargar premake5 para generar los proyectos de Visual Studio
-          Invoke-WebRequest -Uri "https://github.com/premake/premake-core/releases/download/v5.0.0-beta2/premake-5.0.0-beta2-windows.zip" -OutFile "D:\plugin-sdk\premake5.zip"
-          Expand-Archive -Path "D:\plugin-sdk\premake5.zip" -DestinationPath "D:\plugin-sdk"
-          Set-Location "D:\plugin-sdk"
-          .\premake5.exe vs2022
+          $ErrorActionPreference = 'Continue'
 
-          # Compilar Plugin-SDK
+          Write-Host "=== Archivos en Plugin-SDK ==="
+          Get-ChildItem "D:\plugin-sdk" | Select-Object Name
+
+          # 1. Si usa CMake
+          if (Test-Path "D:\plugin-sdk\CMakeLists.txt") {
+            Write-Host "Detectado CMake, configurando y compilando..."
+            cmake -S "D:\plugin-sdk" -B "D:\plugin-sdk\build" -A Win32
+            cmake --build "D:\plugin-sdk\build" --config Release
+          }
+
+          # 2. Si tiene solucion de Visual Studio (.sln)
           $sln = Get-ChildItem -Path "D:\plugin-sdk" -Filter "*.sln" -Recurse | Select-Object -First 1
           if ($sln) {
-            Write-Host "Compilando: $($sln.FullName)"
+            Write-Host "Compilando solucion: $($sln.FullName)"
             msbuild $sln.FullName /p:Configuration="Release" /p:Platform="Win32" /m
           }
 
-          # Asegurar que la carpeta de librerias exista y tenga plugin.lib
+          # 3. Si tiene proyecto .vcxproj de San Andreas
+          $proj = Get-ChildItem -Path "D:\plugin-sdk" -Filter "*sa*.vcxproj" -Recurse | Select-Object -First 1
+          if ($proj) {
+            Write-Host "Compilando proyecto: $($proj.FullName)"
+            msbuild $proj.FullName /p:Configuration="Release" /p:Platform="Win32" /m
+          }
+
+          # 4. Copiar todas las librerias .lib encontradas a output/lib
           New-Item -ItemType Directory -Force -Path "D:\plugin-sdk\output\lib"
           $libs = Get-ChildItem -Path "D:\plugin-sdk" -Filter "*.lib" -Recurse
           foreach ($lib in $libs) {
+            Write-Host "Libreria encontrada: $($lib.FullName)"
             Copy-Item $lib.FullName "D:\plugin-sdk\output\lib\" -Force
             if ($lib.Name -like "*sa*.lib") {
               Copy-Item $lib.FullName "D:\plugin-sdk\output\lib\plugin.lib" -Force
