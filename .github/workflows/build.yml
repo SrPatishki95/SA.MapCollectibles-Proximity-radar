@@ -47,14 +47,12 @@ jobs:
           if (Test-Path "D:\plugin-sdk\output\lib\plugin_sa.lib") {
             Copy-Item "D:\plugin-sdk\output\lib\plugin_sa.lib" "D:\plugin-sdk\output\lib\plugin.lib" -Force
           }
-          Write-Host "=== Contenido final de output/lib ==="
-          Get-ChildItem "D:\plugin-sdk\output\lib" | Select-Object Name
 
       - name: Build Mod ASI
         env:
           PLUGIN_SDK_DIR: D:\plugin-sdk
         run: |
-          msbuild SA.MapCollectibles.vcxproj /p:Configuration="Release GTA-SA" /p:Platform="Win32" /p:PlatformToolset=v143
+          msbuild SA.MapCollectibles.vcxproj /p:Configuration="Release GTA-SA" /p:Platform="Win32"
 
       - name: Upload ASI Artifact
         uses: actions/upload-artifact@v4
