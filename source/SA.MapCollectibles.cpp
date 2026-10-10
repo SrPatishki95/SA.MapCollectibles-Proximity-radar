@@ -8,8 +8,6 @@
 #include "CTimer.h"
 #include "CRadar.h"
 #include "CSprite2d.h"
-#include "CTxdStore.h"
-#include "RenderWare.h"
 #include "CStuntJumpManager.h"
 #include "CHud.h"
 #include "CCutsceneMgr.h"
@@ -62,46 +60,7 @@ static int gCurrentNearZoneId = -1;
 static unsigned int gLastHelpMessageTime = 0;
 static bool gF12WasPressed = false;
 
-// Texturas de iconos originales
-static int gTxdSlot = -1;
-static RwTexture *gTexTags = nullptr;
-static RwTexture *gTexSnapshots = nullptr;
-static RwTexture *gTexHorseshoes = nullptr;
-static RwTexture *gTexOysters = nullptr;
-static RwTexture *gTexJumps = nullptr;
-
-static void LoadFlentricTextures() {
-    if (gTxdSlot != -1) return;
-
-    char path[MAX_PATH] = { 0 };
-
-    char const *pluginPath = PLUGIN_PATH("collectibles.txd");
-    if (GetFileAttributesA(pluginPath) != INVALID_FILE_ATTRIBUTES) {
-        strcpy_s(path, pluginPath);
-    } else if (GetFileAttributesA("collectibles.txd") != INVALID_FILE_ATTRIBUTES) {
-        GetFullPathNameA("collectibles.txd", MAX_PATH, path, nullptr);
-    } else if (GetFileAttributesA("models\\collectibles.txd") != INVALID_FILE_ATTRIBUTES) {
-        GetFullPathNameA("models\\collectibles.txd", MAX_PATH, path, nullptr);
-    }
-
-    if (path[0] != '\0') {
-        gTxdSlot = CTxdStore::AddTxdSlot("map_collectibles");
-        CTxdStore::LoadTxd(gTxdSlot, path);
-        CTxdStore::AddRef(gTxdSlot);
-        CTxdStore::PushCurrentTxd();
-        CTxdStore::SetCurrentTxd(gTxdSlot);
-
-        gTexTags = RwTextureRead("tag", nullptr);
-        gTexSnapshots = RwTextureRead("snapshot", nullptr);
-        gTexHorseshoes = RwTextureRead("horseshoe", nullptr);
-        gTexOysters = RwTextureRead("oyster", nullptr);
-        gTexJumps = RwTextureRead("jump", nullptr);
-
-        CTxdStore::PopCurrentTxd();
-    }
-}
-
-// Calculo del centro desfasado fijo
+// Calculo del centro desfasado determinista (Fijo, nunca tiembla)
 static CVector2D ComputeSearchZoneCenter(const CVector &pos, int id) {
     unsigned int hash = (static_cast<unsigned int>(id) * 2654435761u) ^
                         (static_cast<unsigned int>(pos.x * 10.0f) * 2246822519u) ^
@@ -219,62 +178,6 @@ static void RebuildIconsIfStale() {
     }
 }
 
-// Dibujado del circulo difuso estilo RDR2
-static void DrawSoftSearchCircle(float screenX, float screenY, float radius, unsigned char r, unsigned char g, unsigned char b, unsigned char centerAlpha) {
-    const int NUM_SEGS = 24;
-    RwIm2DVertex vertices[NUM_SEGS + 2];
-
-    RwIm2DVertexSetScreenX(&vertices[0], screenX);
-    RwIm2DVertexSetScreenY(&vertices[0], screenY);
-    RwIm2DVertexSetScreenZ(&vertices[0], 0.0f);
-    RwIm2DVertexSetRecipCameraZ(&vertices[0], 1.0f);
-    RwIm2DVertexSetIntRGBA(&vertices[0], r, g, b, centerAlpha);
-
-    for (int i = 0; i <= NUM_SEGS; ++i) {
-        float angle = (i % NUM_SEGS) * (6.2831853f / static_cast<float>(NUM_SEGS));
-        float vx = screenX + cosf(angle) * radius;
-        float vy = screenY + sinf(angle) * radius;
-
-        RwIm2DVertexSetScreenX(&vertices[i + 1], vx);
-        RwIm2DVertexSetScreenY(&vertices[i + 1], vy);
-        RwIm2DVertexSetScreenZ(&vertices[i + 1], 0.0f);
-        RwIm2DVertexSetRecipCameraZ(&vertices[i + 1], 1.0f);
-        RwIm2DVertexSetIntRGBA(&vertices[i + 1], r, g, b, 0);
-    }
-
-    RwRenderStateSet(rwRENDERSTATETEXTURERASTER, (void *)nullptr);
-    RwRenderStateSet(rwRENDERSTATEZTESTENABLE, (void *)FALSE);
-    RwRenderStateSet(rwRENDERSTATEZWRITEENABLE, (void *)FALSE);
-    RwRenderStateSet(rwRENDERSTATEVERTEXALPHAENABLE, (void *)TRUE);
-    RwRenderStateSet(rwRENDERSTATESRCBLEND, (void *)rwBLENDSRCALPHA);
-    RwRenderStateSet(rwRENDERSTATEDESTBLEND, (void *)rwBLENDINVSRCALPHA);
-
-    RwIm2DRenderPrimitive(rwPRIMTYPETRIFAN, vertices, NUM_SEGS + 2);
-}
-
-// Dibujado de iconos exactos (con fallback si falta la textura)
-static void DrawExactIcon(int type, float screenX, float screenY, float size) {
-    RwTexture *tex = nullptr;
-    CRGBA fallbackColor(255, 255, 255, 255);
-
-    switch (type) {
-    case MODE_TAGS:       tex = gTexTags;       fallbackColor = CRGBA(50, 205, 50, 255); break;
-    case MODE_SNAPSHOTS:  tex = gTexSnapshots;  fallbackColor = CRGBA(30, 144, 255, 255); break;
-    case MODE_HORSESHOES: tex = gTexHorseshoes; fallbackColor = CRGBA(255, 140, 0, 255); break;
-    case MODE_OYSTERS:    tex = gTexOysters;    fallbackColor = CRGBA(0, 255, 255, 255); break;
-    case MODE_JUMPS:      tex = gTexJumps;      fallbackColor = CRGBA(255, 215, 0, 255); break;
-    }
-
-    CRect rect(screenX - size * 0.5f, screenY - size * 0.5f, screenX + size * 0.5f, screenY + size * 0.5f);
-    if (tex) {
-        CSprite2d sprite;
-        sprite.m_pTexture = tex;
-        sprite.Draw(rect, CRGBA(255, 255, 255, 255));
-    } else {
-        CSprite2d::DrawRect(rect, fallbackColor);
-    }
-}
-
 // Atajo F12
 static void CheckF12Hotkey() {
     bool isDown = (GetAsyncKeyState(VK_F12) & 0x8000) != 0;
@@ -335,101 +238,60 @@ static void UpdateProximityLogic() {
     }
 }
 
-// GANCHO 1: Dibujado en el HUD Radar (mientras jugas)
-static void DrawRadarCollectibles() {
+// Dibujado en el Radar oficial 100% nativo de GTA SA
+static void DrawRadarElements() {
     CPlayerPed *player = FindPlayerPed();
     if (!player) return;
     CVector playerPos = player->GetPosition();
 
-    float radarMaxRange = *reinterpret_cast<float *>(0xBA8314);
-    if (radarMaxRange <= 1.0f) radarMaxRange = 150.0f;
-
     for (const auto &item : gRemaining) {
-        // Zona difusa en radar
-        if (gEnableSearchZones) {
-            float dx = playerPos.x - item.searchCenter.x;
-            float dy = playerPos.y - item.searchCenter.y;
-            if ((dx * dx + dy * dy) <= (radarMaxRange * radarMaxRange * 2.0f)) {
-                CVector2D radarPoint;
-                CRadar::TransformRealWorldPointToRadarSpace(radarPoint, item.searchCenter);
-                if (radarPoint.Magnitude() <= 1.2f) {
-                    CVector2D screenPos;
-                    CRadar::TransformRadarPointToScreenSpace(screenPos, radarPoint);
+        float dx = playerPos.x - item.searchCenter.x;
+        float dy = playerPos.y - item.searchCenter.y;
 
-                    float radarRadiusPixels = (RsGlobal.maximumWidth * 0.075f);
-                    float screenRadius = (gSearchRadius / radarMaxRange) * radarRadiusPixels;
-                    if (screenRadius < 8.0f) screenRadius = 8.0f;
+        // Solo procesar si esta a menos de 250 metros
+        if ((dx * dx + dy * dy) <= (250.0f * 250.0f)) {
 
-                    DrawSoftSearchCircle(screenPos.x, screenPos.y, screenRadius, 245, 205, 50, 80);
+            // 1. Zona difusa estilo RDR2 usando la funcion oficial de territorios de Rockstar
+            if (gEnableSearchZones) {
+                CRadar::DrawAreaOnRadar(
+                    item.searchCenter.x - gSearchRadius,
+                    item.searchCenter.y - gSearchRadius,
+                    item.searchCenter.x + gSearchRadius,
+                    item.searchCenter.y + gSearchRadius,
+                    CRGBA(255, 215, 0, 75), // Amarillo ambar translúcido
+                    true
+                );
+            }
+
+            // 2. Iconos exactos al apretar F12
+            if (gShowExactIcons) {
+                CRGBA col(255, 255, 255, 255);
+                switch (item.type) {
+                case MODE_TAGS:       col = CRGBA(50, 205, 50, 255); break;  // Verde
+                case MODE_SNAPSHOTS:  col = CRGBA(30, 144, 255, 255); break; // Azul
+                case MODE_HORSESHOES: col = CRGBA(255, 140, 0, 255); break; // Naranja
+                case MODE_OYSTERS:    col = CRGBA(0, 255, 255, 255); break;  // Cyan
+                case MODE_JUMPS:      col = CRGBA(255, 215, 0, 255); break;  // Amarillo
                 }
-            }
-        }
 
-        // Iconos exactos en radar (con F12)
-        if (gShowExactIcons) {
-            CVector2D radarPoint;
-            CRadar::TransformRealWorldPointToRadarSpace(radarPoint, CVector2D(item.pos.x, item.pos.y));
-            if (radarPoint.Magnitude() <= 1.0f) {
-                CVector2D screenPos;
-                CRadar::TransformRadarPointToScreenSpace(screenPos, radarPoint);
-                DrawExactIcon(item.type, screenPos.x, screenPos.y, 16.0f);
-            }
-        }
-    }
-}
-
-// GANCHO 2: Dibujado en el Mapa del Menu de Pausa
-static void DrawPauseMapCollectibles() {
-    float mapZoom = FrontEndMenuManager.m_fMapZoom;
-    if (mapZoom <= 0.0001f) return;
-
-    // Leemos directamente las direcciones de memoria fija de GTA SA para maximo soporte
-    float mapCenterX = *reinterpret_cast<float *>(0xBA67B8);
-    float mapCenterY = *reinterpret_cast<float *>(0xBA67BC);
-    float screenMidX = static_cast<float>(RsGlobal.maximumWidth) * 0.5f;
-    float screenMidY = static_cast<float>(RsGlobal.maximumHeight) * 0.5f;
-
-    for (const auto &item : gRemaining) {
-        // Zona difusa en el mapa de pausa
-        if (gEnableSearchZones) {
-            float screenX = screenMidX + (item.searchCenter.x - mapCenterX) * mapZoom;
-            float screenY = screenMidY - (item.searchCenter.y - mapCenterY) * mapZoom;
-            float screenRadius = gSearchRadius * mapZoom;
-
-            if (screenX >= -screenRadius && screenX <= (RsGlobal.maximumWidth + screenRadius) &&
-                screenY >= -screenRadius && screenY <= (RsGlobal.maximumHeight + screenRadius)) {
-                DrawSoftSearchCircle(screenX, screenY, screenRadius, 245, 205, 50, 95);
-            }
-        }
-
-        // Iconos exactos en el mapa de pausa (con F12)
-        if (gShowExactIcons) {
-            float screenX = screenMidX + (item.pos.x - mapCenterX) * mapZoom;
-            float screenY = screenMidY - (item.pos.y - mapCenterY) * mapZoom;
-
-            if (screenX >= 0.0f && screenX <= RsGlobal.maximumWidth &&
-                screenY >= 0.0f && screenY <= RsGlobal.maximumHeight) {
-                DrawExactIcon(item.type, screenX, screenY, 18.0f);
+                // Marcador visible de 6 metros en el radar
+                CRadar::DrawAreaOnRadar(
+                    item.pos.x - 3.0f,
+                    item.pos.y - 3.0f,
+                    item.pos.x + 3.0f,
+                    item.pos.y + 3.0f,
+                    col,
+                    true
+                );
             }
         }
     }
-}
-
-static void DrawRadarMap_Hook() {
-    CRadar::DrawMap();
-    DrawRadarCollectibles();
-}
-
-static void DrawPauseMap_Hook() {
-    CRadar::DrawMap();
-    DrawPauseMapCollectibles();
 }
 
 class SearchCollectiblesPlugin {
 public:
     SearchCollectiblesPlugin() {
         Events::initGameEvent += [] {
-            LoadFlentricTextures();
             RebuildIcons();
         };
 
@@ -438,10 +300,9 @@ public:
             UpdateProximityLogic();
         };
 
-        // Enganchar el radar mientras jugas (0x58AA2F)
-        plugin::patch::RedirectCall(0x58AA2F, DrawRadarMap_Hook);
-
-        // Enganchar el mapa del menu de pausa (0x575916)
-        plugin::patch::RedirectCall(0x575916, DrawPauseMap_Hook);
+        // Evento nativo de Plugin-SDK blindado contra CLEO+
+        Events::drawRadarOverlayEvent += [] {
+            DrawRadarElements();
+        };
     }
 } gSearchPlugin;
