@@ -251,16 +251,15 @@ static void DrawRadarElements() {
         // Solo procesar si esta a menos de 250 metros
         if ((dx * dx + dy * dy) <= (250.0f * 250.0f)) {
 
-            // 1. Zona difusa estilo RDR2 usando la funcion oficial de territorios de Rockstar
+            // 1. Zona difusa estilo RDR2 usando CRect empaquetado
             if (gEnableSearchZones) {
-                CRadar::DrawAreaOnRadar(
+                CRect zoneRect(
                     item.searchCenter.x - gSearchRadius,
                     item.searchCenter.y - gSearchRadius,
                     item.searchCenter.x + gSearchRadius,
-                    item.searchCenter.y + gSearchRadius,
-                    CRGBA(255, 215, 0, 75), // Amarillo ambar translúcido
-                    true
+                    item.searchCenter.y + gSearchRadius
                 );
+                CRadar::DrawAreaOnRadar(zoneRect, CRGBA(255, 215, 0, 75), true);
             }
 
             // 2. Iconos exactos al apretar F12
@@ -274,15 +273,14 @@ static void DrawRadarElements() {
                 case MODE_JUMPS:      col = CRGBA(255, 215, 0, 255); break;  // Amarillo
                 }
 
-                // Marcador visible de 6 metros en el radar
-                CRadar::DrawAreaOnRadar(
+                // Marcador visible en el radar
+                CRect markerRect(
                     item.pos.x - 3.0f,
                     item.pos.y - 3.0f,
                     item.pos.x + 3.0f,
-                    item.pos.y + 3.0f,
-                    col,
-                    true
+                    item.pos.y + 3.0f
                 );
+                CRadar::DrawAreaOnRadar(markerRect, col, true);
             }
         }
     }
