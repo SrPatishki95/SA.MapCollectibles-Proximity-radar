@@ -183,7 +183,8 @@ static bool gProximityMode = true; // Por defecto arranca en modo busqueda
 static bool gF12Down = false;
 static int gLastNotifiedId = -1;
 static unsigned int gLastHelpTime = 0;
-static const float gTriggerDist = 75.0f; // Distancia exacta unificada (75 metros)
+static const float gTriggerDist = 75.0f;  // Distancia para activar aviso y zona (75 metros)
+static const float gZoneRadius = 35.0f;   // Radio de la zona de busqueda (cubre 70m)
 
 static CRGBA GetThemeColor(int type, unsigned char alpha = 255) {
     switch (type) {
@@ -203,43 +204,10 @@ static CVector2D ComputeSearchZoneCenter(const CVector2D &pos, int type) {
                         (static_cast<unsigned int>(type) * 2654435761u);
 
     float angle = (hash % 360) * (3.14159265f / 180.0f);
-    float offsetDist = 18.0f + static_cast<float>((hash >> 8) % 12); // Desfase de 18 a 30m
+    float offsetDist = 18.0f + static_cast<float>((hash >> 8) % 12); // Desfase fijo de 18 a 30m
 
     return CVector2D(pos.x + cosf(angle) * offsetDist,
                      pos.y + sinf(angle) * offsetDist);
-}
-
-// Dibujado de disco difuso con borde desvanecido (RenderWare 2D)
-static void DrawSoftCircle2D(float screenX, float screenY, float radius, CRGBA color) {
-    const int NUM_SEGS = 20;
-    RwIm2DVertex vertices[NUM_SEGS + 2];
-
-    RwIm2DVertexSetScreenX(&vertices[0], screenX);
-    RwIm2DVertexSetScreenY(&vertices[0], screenY);
-    RwIm2DVertexSetScreenZ(&vertices[0], 0.0f);
-    RwIm2DVertexSetRecipCameraZ(&vertices[0], 1.0f);
-    RwIm2DVertexSetIntRGBA(&vertices[0], color.r, color.g, color.b, color.a);
-
-    for (int i = 0; i <= NUM_SEGS; ++i) {
-        float angle = (i % NUM_SEGS) * (6.2831853f / static_cast<float>(NUM_SEGS));
-        float vx = screenX + cosf(angle) * radius;
-        float vy = screenY + sinf(angle) * radius;
-
-        RwIm2DVertexSetScreenX(&vertices[i + 1], vx);
-        RwIm2DVertexSetScreenY(&vertices[i + 1], vy);
-        RwIm2DVertexSetScreenZ(&vertices[i + 1], 0.0f);
-        RwIm2DVertexSetRecipCameraZ(&vertices[i + 1], 1.0f);
-        RwIm2DVertexSetIntRGBA(&vertices[i + 1], color.r, color.g, color.b, 0); // Borde transparente
-    }
-
-    RwRenderStateSet(rwRENDERSTATETEXTURERASTER, (void *)nullptr);
-    RwRenderStateSet(rwRENDERSTATEZTESTENABLE, (void *)FALSE);
-    RwRenderStateSet(rwRENDERSTATEZWRITEENABLE, (void *)FALSE);
-    RwRenderStateSet(rwRENDERSTATEVERTEXALPHAENABLE, (void *)TRUE);
-    RwRenderStateSet(rwRENDERSTATESRCBLEND, (void *)rwBLENDSRCALPHA);
-    RwRenderStateSet(rwRENDERSTATEDESTBLEND, (void *)rwBLENDINVSRCALPHA);
-
-    RwIm2DRenderPrimitive(rwPRIMTYPETRIFAN, vertices, NUM_SEGS + 2);
 }
 
 static void TakeIniStamp() {
@@ -666,7 +634,7 @@ static void DrawCollectibles() {
     float scaleY = gMapHeight / (WORLD_HALF_SIZE * 2.0f);
 
     if (gProximityMode) {
-        // EN NUESTRO MODO: Dibujar la ZONA DIFUSA DESFASADA (estilo RDR2) a <= 75m
+        // EN NUESTRO MODO: Dibuja un unico cuadrante limpio de territorio (estilo Rockstar) a <= 75m
         CVector player = FindPlayerCoors(0);
         const CollectibleIcon *closest = nullptr;
         float closestDistSq = 9999999.0f;
@@ -685,15 +653,15 @@ static void DrawCollectibles() {
             CVector2D zoneCenter = ComputeSearchZoneCenter(closest->posn, closest->type);
             float x = gMapLeft + (zoneCenter.x + WORLD_HALF_SIZE) * scaleX;
             float y = gMapTop + (WORLD_HALF_SIZE - zoneCenter.y) * scaleY;
-            float zoneRadiusScreen = 35.0f * scaleX; // Radio de 35 metros cubriendo la manzana
+            float r = gZoneRadius * scaleX;
 
             if (x >= gMapLeft && x <= gMapLeft + gMapWidth && y >= gMapTop && y <= gMapTop + gMapHeight) {
-                CRGBA col = GetThemeColor(closest->type, 90);
-                DrawSoftCircle2D(x, y, zoneRadiusScreen, col);
+                CRGBA zoneColor = GetThemeColor(closest->type, 75);
+                CSprite2d::DrawRect(CRect(x - r, y - r, x + r, y + r), zoneColor);
             }
         }
 
-        // Los ya completados se siguen mostrando normalmente
+        // Los completados se siguen mostrando normalmente
         for (std::vector<CollectibleIcon>::const_iterator it = gCollected.begin(); it != gCollected.end(); ++it)
             DrawMapIcon(gSprites[it->type], it->posn, 255, scaleX, scaleY, half);
     } else {
@@ -739,7 +707,7 @@ static void DrawRadarIcon(const CollectibleIcon &icon, CSprite2d &sprite, float 
                 CRGBA(255, 255, 255, 255));
 }
 
-// DIBUJADO EN EL RADAR
+// DIBUJADO EN EL RADAR (FUNCION OFICIAL DE TERRITORIOS DE ROCKSTAR)
 static void DrawRadarCollectibles() {
     PollSettings();
 
@@ -762,7 +730,7 @@ static void DrawRadarCollectibles() {
 
     if (showFinder) {
         if (gProximityMode) {
-            // EN NUESTRO MODO: Dibujar la ZONA DIFUSA DESFASADA (estilo RDR2) a <= 75m
+            // EN NUESTRO MODO: Dibuja un unico cuadrante limpio de territorio en el radar a <= 75m
             const CollectibleIcon *closest = nullptr;
             float closestDistSq = 9999999.0f;
 
@@ -778,16 +746,14 @@ static void DrawRadarCollectibles() {
 
             if (closest && closestDistSq <= (gTriggerDist * gTriggerDist)) {
                 CVector2D zoneCenter = ComputeSearchZoneCenter(closest->posn, closest->type);
-
-                CVector2D radarSpace, screen;
-                CRadar::TransformRealWorldPointToRadarSpace(radarSpace, zoneCenter);
-
-                if (radarSpace.x * radarSpace.x + radarSpace.y * radarSpace.y <= limit * 1.3f) {
-                    CRadar::TransformRadarPointToScreenSpace(screen, radarSpace);
-                    float zoneRadiusScreen = half * 3.5f; // Tamano visual del area en el radar
-                    CRGBA col = GetThemeColor(closest->type, 85);
-                    DrawSoftCircle2D(screen.x, screen.y, zoneRadiusScreen, col);
-                }
+                CRect zoneRect(
+                    zoneCenter.x - gZoneRadius,
+                    zoneCenter.y - gZoneRadius,
+                    zoneCenter.x + gZoneRadius,
+                    zoneCenter.y + gZoneRadius
+                );
+                CRGBA zoneColor = GetThemeColor(closest->type, 75);
+                CRadar::DrawAreaOnRadar(zoneRect, zoneColor, true);
             }
         } else {
             // MODO FLENTRIC ORIGINAL (F12): Dibuja todos los iconos fijos exactos
@@ -991,7 +957,7 @@ public:
 
         Events::initGameEvent += [] { InitDebugMenu(); };
 
-        // LOGICA DE PROXIMIDAD Y F12
+        // LOGICA DE PROXIMIDAD, F12 Y BLOQUEO EN CINEMATICAS
         Events::gameProcessEvent += [] {
             bool f12Pressed = (GetAsyncKeyState(VK_F12) & 0x8000) != 0;
             if (f12Pressed && !gF12Down) {
@@ -1006,7 +972,7 @@ public:
                 gF12Down = false;
             }
 
-            // Aviso de la cajita negra oficial a exactamente 75 metros
+            // Solo salta si estamos jugando normal (NO en pausa, NO en cinematica, NO en barras negras)
             if (gProximityMode && !FrontEndMenuManager.m_bMenuActive && !CTimer::m_UserPause && !CCutsceneMgr::ms_running && !TheCamera.m_bWideScreenOn) {
                 CPlayerPed *player = FindPlayerPed();
                 if (player && player->m_fHealth > 0.0f && player->m_nAreaCode == 0) {
