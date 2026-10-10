@@ -87,11 +87,18 @@ static void LoadFlentricSprites() {
         CTxdStore::PushCurrentTxd();
         CTxdStore::SetCurrentTxd(txdSlot);
 
-        gSprites[MODE_TAGS].SetTexture("tag");
-        gSprites[MODE_SNAPSHOTS].SetTexture("snapshot");
-        gSprites[MODE_HORSESHOES].SetTexture("horseshoe");
-        gSprites[MODE_OYSTERS].SetTexture("oyster");
-        gSprites[MODE_JUMPS].SetTexture("jump");
+        // Nombres en buffers char para compatibilidad estricta
+        char texTag[]   = "tag";
+        char texSnap[]  = "snapshot";
+        char texHorse[] = "horseshoe";
+        char texOyst[]  = "oyster";
+        char texJump[]  = "jump";
+
+        gSprites[MODE_TAGS].SetTexture(texTag);
+        gSprites[MODE_SNAPSHOTS].SetTexture(texSnap);
+        gSprites[MODE_HORSESHOES].SetTexture(texHorse);
+        gSprites[MODE_OYSTERS].SetTexture(texOyst);
+        gSprites[MODE_JUMPS].SetTexture(texJump);
 
         CTxdStore::PopCurrentTxd();
         gSpritesLoaded = true;
@@ -110,7 +117,7 @@ static CRGBA GetThemeColor(int type, unsigned char alpha = 255) {
     }
 }
 
-// Calculo del centro desfasado fijo
+// Calculo del centro desfasado determinista (Fijo, nunca tiembla)
 static CVector2D ComputeSearchZoneCenter(const CVector &pos, int id) {
     unsigned int hash = (static_cast<unsigned int>(id) * 2654435761u) ^
                         (static_cast<unsigned int>(pos.x * 10.0f) * 2246822519u) ^
@@ -294,7 +301,6 @@ static void DrawRadarElements() {
     if (!player) return;
     CVector playerPos = player->GetPosition();
 
-    // Asegurarse de que los sprites de Flentric esten cargados
     if (!gSpritesLoaded) {
         LoadFlentricSprites();
     }
@@ -306,7 +312,7 @@ static void DrawRadarElements() {
         float dy = playerPos.y - item.pos.y;
         float distSq = dx * dx + dy * dy;
 
-        // FILTRO ESTRICTO: Si no esta en tu manzana (a menos de 160m), ignorarlo por completo
+        // FILTRO ESTRICTO: Solo mostrar si esta en tu manzana (a menos de 160m)
         if (distSq > maxDistSq) {
             continue;
         }
