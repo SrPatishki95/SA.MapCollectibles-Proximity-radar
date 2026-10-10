@@ -252,7 +252,7 @@ static void DrawSoftSearchCircle(float screenX, float screenY, float radius, uns
     RwIm2DRenderPrimitive(rwPRIMTYPETRIFAN, vertices, NUM_SEGS + 2);
 }
 
-// Dibujado de iconos exactos (con fallback de color si falta la textura)
+// Dibujado de iconos exactos (con fallback si falta la textura)
 static void DrawExactIcon(int type, float screenX, float screenY, float size) {
     RwTexture *tex = nullptr;
     CRGBA fallbackColor(255, 255, 255, 255);
@@ -383,8 +383,9 @@ static void DrawPauseMapCollectibles() {
     float mapZoom = FrontEndMenuManager.m_fMapZoom;
     if (mapZoom <= 0.0001f) return;
 
-    float mapCenterX = FrontEndMenuManager.m_vMapOrigin.x;
-    float mapCenterY = FrontEndMenuManager.m_vMapOrigin.y;
+    // Leemos directamente las direcciones de memoria fija de GTA SA para maximo soporte
+    float mapCenterX = *reinterpret_cast<float *>(0xBA67B8);
+    float mapCenterY = *reinterpret_cast<float *>(0xBA67BC);
     float screenMidX = static_cast<float>(RsGlobal.maximumWidth) * 0.5f;
     float screenMidY = static_cast<float>(RsGlobal.maximumHeight) * 0.5f;
 
