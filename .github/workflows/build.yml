@@ -22,48 +22,33 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/DK22Pac/plugin-sdk.git D:\plugin-sdk
 
-      - name: Build Plugin-SDK
+      - name: Build Plugin-SDK (GTA SA)
+        shell: cmd
+        run: |
+          cd /d D:\plugin-sdk
+          set PLUGIN_SDK_DIR=D:\plugin-sdk
+          call "tools\generate\Visual Studio.bat"
+          msbuild plugin.slnx /property:Configuration=Release /property:Platform="Mixed Platforms" /target:plugin_sa /m || msbuild plugin.slnx /property:Configuration=zRelease /property:Platform="Mixed Platforms" /target:plugin_sa /m || msbuild plugin.slnx /property:Configuration=zDebug /property:Platform="Mixed Platforms" /target:plugin_sa /m
+
+      - name: Ensure plugin.lib exists
         shell: powershell
         run: |
-          $ErrorActionPreference = 'Continue'
-
-          Write-Host "=== 1. RECETA SECRETA DE DK22PAC (.github/workflows) ==="
-          Get-ChildItem "D:\plugin-sdk\.github\workflows" -Filter "*.yml" | ForEach-Object {
-            Write-Host "--- Archivo: $($_.Name) ---"
-            Get-Content $_.FullName
-          }
-
-          Write-Host "=== 2. CONTENIDO DE TOOLS ==="
-          Get-ChildItem "D:\plugin-sdk\tools" | Select-Object Name
-
-          Write-Host "=== 3. BUSCANDO ARCHIVOS DE COMPILACION ==="
-          Get-ChildItem "D:\plugin-sdk" -Recurse -Include "*.sln", "*.vcxproj", "CMakeLists.txt", "premake*.lua" | Select-Object FullName
-
-          # Si encuentra algun premake.lua en cualquier subcarpeta, lo corre:
-          $premakeScript = Get-ChildItem "D:\plugin-sdk" -Filter "premake*.lua" -Recurse | Select-Object -First 1
-          if ($premakeScript) {
-            Write-Host "Ejecutando Premake con: $($premakeScript.FullName)"
-            Invoke-WebRequest -Uri "https://github.com/premake/premake-core/releases/download/v5.0.0-beta2/premake-5.0.0-beta2-windows.zip" -OutFile "D:\plugin-sdk\premake5.zip"
-            Expand-Archive -Path "D:\plugin-sdk\premake5.zip" -DestinationPath "D:\plugin-sdk"
-            Set-Location $premakeScript.DirectoryName
-            & "D:\plugin-sdk\premake5.exe" vs2022 --file=$premakeScript.FullName
-          }
-
-          # Si se genero algun .sln, compilarlo:
-          $sln = Get-ChildItem "D:\plugin-sdk" -Filter "*.sln" -Recurse | Select-Object -First 1
-          if ($sln) {
-            Write-Host "Compilando solution: $($sln.FullName)"
-            msbuild $sln.FullName /p:Configuration="Release" /p:Platform="Win32" /m
-          }
-
-          # Copiar todas las .lib a output/lib
           New-Item -ItemType Directory -Force -Path "D:\plugin-sdk\output\lib"
-          Get-ChildItem "D:\plugin-sdk" -Filter "*.lib" -Recurse | ForEach-Object {
-            Copy-Item $_.FullName "D:\plugin-sdk\output\lib\" -Force
-            if ($_.Name -like "*sa*.lib") {
-              Copy-Item $_.FullName "D:\plugin-sdk\output\lib\plugin.lib" -Force
+          $libs = Get-ChildItem -Path "D:\plugin-sdk" -Filter "*.lib" -Recurse
+          foreach ($lib in $libs) {
+            Write-Host "Libreria encontrada: $($lib.FullName)"
+            if ($lib.DirectoryName -ne "D:\plugin-sdk\output\lib") {
+              Copy-Item $lib.FullName "D:\plugin-sdk\output\lib\" -Force
+            }
+            if ($lib.Name -like "*sa*.lib") {
+              Copy-Item $lib.FullName "D:\plugin-sdk\output\lib\plugin.lib" -Force
             }
           }
+          if (Test-Path "D:\plugin-sdk\output\lib\plugin_sa.lib") {
+            Copy-Item "D:\plugin-sdk\output\lib\plugin_sa.lib" "D:\plugin-sdk\output\lib\plugin.lib" -Force
+          }
+          Write-Host "=== Contenido final de output/lib ==="
+          Get-ChildItem "D:\plugin-sdk\output\lib" | Select-Object Name
 
       - name: Build Mod ASI
         env:
